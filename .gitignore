@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Build artifacts
+build/
+dist/
+
+# Test outputs
+test/**/*.log
+test/**/*.pdf
+
+# Generated synthetic data
+synth-*.dat
