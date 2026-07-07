@@ -1,5 +1,7 @@
 # ShereKhan 1.2.0
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 NMR CPMG relaxation-dispersion curve analysis — two-state chemical-exchange fitting.
 
 - **Author:** Prof. Dr. Donghan Lee, Korea Basic Science Institute (KBSI)
