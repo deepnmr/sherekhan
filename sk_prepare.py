@@ -35,12 +35,8 @@ Copyright (c) 2025-2026 Prof. Dr. Donghan Lee, Korea Basic Science Institute (KB
 ###
 
 from sys import argv, stderr
-from json import dumps, encoder
+from json import dumps
 from cpmg.model_2state import CPMG_model
-
-# Note: encoder.FLOAT_REPR is a Python 2 hook and has no effect in Python 3.
-# Retained here for historical compatibility.
-encoder.FLOAT_REPR = lambda o: format(o, '.4f')
 
 
 def main():

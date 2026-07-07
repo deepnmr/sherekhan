@@ -156,7 +156,7 @@ def main():
         m2.init_dd(dd_0)  # set chemical shift difference (or phi) for all residues
         if m2.model == 'Meiboom':
             m2.kex = kex_0
-        elif m2.model == 'Matrix' or m2.model == 'London':
+        elif m2.model in ('Matrix', 'London'):
             # Convert kex + pB into individual rate constants
             kAB    = pB_0 * kex_0
             kBA    = (1.0 - pB_0) * kex_0
@@ -191,7 +191,7 @@ def main():
     # -----------------------------------------------------------------------
     # Write outputs: log file, PDF, and JSON to stdout
     # -----------------------------------------------------------------------
-    logBuf = m2.getLogBuffer()
+    logBuf = m2.getLogBuffer(argv[1])
 
     # Append the AIC model-comparison block to the log when it was computed
     if aicReportText is not None:

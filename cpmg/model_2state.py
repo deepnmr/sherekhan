@@ -37,10 +37,10 @@ use('Agg')  # non-interactive backend — must be set before importing pyplot
 
 from sys import argv
 import numpy as np
-from numpy import array, sqrt, pi, dot, append, real, log, sin, sinh, cos, cosh, matrix, exp, zeros, sort, tanh
+from numpy import array, sqrt, pi, dot, real, log, sin, sinh, cos, cosh, matrix, exp, zeros, sort, tanh
 from scipy.optimize import leastsq
 from matplotlib.pyplot import plot, errorbar, figure, title, legend, xlabel, ylabel, grid, xlim, ylim, close, \
-    subplot, text
+    subplot
 from matplotlib.backends.backend_pdf import PdfPages
 
 from .cpmg import CPMGDataSet
@@ -104,22 +104,6 @@ class CPMG_model:
     # Parameter initialisation helpers
     # -------------------------------------------------------------------------
 
-    def init_dd_R2_0(self, dd_AB, r2_0):
-        """Initialise chemical-shift difference and R2_0 for all residues.
-
-        Args:
-            dd_AB (float): Initial chemical shift difference (ppm) or phi value.
-            r2_0  (float): Initial intrinsic R2 relaxation rate (s^-1).
-        """
-        for r in self.dataset.rsds:
-            r.dd = dd_AB        # csd (ppm) for Matrix/London; phi for Meiboom
-            r.R2_0 = []
-            r.dd_std = 0.0
-            r.R2_0_std = []
-            for i in range(0, len(r.dspCurves)):
-                r.R2_0.append(r2_0)
-                r.R2_0_std.append(0.0)
-
     def init_dd(self, dd_AB):
         """Set the chemical shift difference (or phi) for all residues.
 
@@ -138,12 +122,9 @@ class CPMG_model:
         so R2exp at that point is a good proxy for the intrinsic R2_0.
         """
         for r in self.dataset.rsds:
-            r.R2_0 = []
-            r.R2_0_std = []
-            for i in range(0, len(r.dspCurves)):
-                r2_0 = r.dspCurves[i].R2exp[-1]  # highest nu_CPMG → smallest Rex
-                r.R2_0.append(r2_0)
-                r.R2_0_std.append(0.0)
+            # highest nu_CPMG (last point) → smallest Rex → best R2_0 proxy
+            r.R2_0 = [dsp.R2exp[-1] for dsp in r.dspCurves]
+            r.R2_0_std = [0.0] * len(r.dspCurves)
 
     # -------------------------------------------------------------------------
     # Parameter vector packing / unpacking
@@ -180,7 +161,7 @@ class CPMG_model:
                                        is singular or poorly constrained.
         """
         # Number of global parameters preceding the local ones
-        if self.model == 'Matrix' or self.model == 'London':
+        if self.model in ('Matrix', 'London'):
             nGlob = 2   # kAB, kBA
         elif self.model == 'Meiboom':
             nGlob = 1   # kex
@@ -492,129 +473,12 @@ class CPMG_model:
     # Vectorised R2 calculation models (accept v_array, return array)
     # -------------------------------------------------------------------------
 
-    def R2_clc_matrix2_vec(self, kAB, kBA, domega, R2_0, v_array, tcp):
-        """Vectorised R2eff via eigenvalue decomposition over all CPMG frequencies.
-
-        Computes the 2×2 Liouvillian eigenvalues and eigenvectors once (they are
-        independent of nu_CPMG), then propagates all CPMG frequencies in a single
-        batch of matrix operations.
-
-        Args:
-            kAB     (float)     : A→B exchange rate (s^-1).
-            kBA     (float)     : B→A exchange rate (s^-1).
-            domega  (float)     : Chemical shift difference in rad/s.
-            R2_0    (float)     : Intrinsic transverse relaxation rate (s^-1).
-            v_array (np.ndarray): CPMG pulsing frequencies in Hz, shape (n_v,).
-            tcp     (float)     : Total CPMG pulse delay (s).
-
-        Returns:
-            np.ndarray: Real R2eff values, shape (n_v,).
-        """
-        # --- Scalar quantities independent of vCPMG ---
-        AA = sqrt(kBA ** 2 + (2.0 * kAB - 2.0j * domega) * kBA
-                  + kAB ** 2 + 2.0j * domega * kAB - domega ** 2)
-
-        # Base eigenvalues (per unit delta); actual eigenvalues = L_base * delta
-        L1_base = -(AA + kBA + kAB + (2.0 * R2_0 - 1.0j * domega)) / 2.0
-        L2_base =  (AA - kBA - kAB + (1.0j * domega - 2.0 * R2_0)) / 2.0
-
-        # Eigenvectors of A (independent of vCPMG)
-        denom_v1 = -AA + kBA - kAB - 1.0j * domega
-        denom_v2 =  AA + kBA - kAB - 1.0j * domega
-        # Fall back to scalar loop when eigenvectors are degenerate (kAB ≈ 0)
-        if abs(denom_v1) < 1e-10 or abs(denom_v2) < 1e-10:
-            return np.array([self.R2_clc_matrix2(kAB, kBA, domega, R2_0, v, tcp)
-                             for v in v_array])
-        v1 = (2.0 * kAB) / denom_v1
-        v2 = (2.0 * kAB) / denom_v2
-        diff_v = v2 - v1
-        if abs(diff_v) < 1e-10:
-            return np.array([self.R2_clc_matrix2(kAB, kBA, domega, R2_0, v, tcp)
-                             for v in v_array])
-        X  = np.array([[1.0, 1.0], [v1, v2]], dtype=complex)
-        Xi = np.array([
-                [ v2 / diff_v, -1.0 / diff_v],
-                [-v1 / diff_v,  1.0 / diff_v]
-               ], dtype=complex)
-        Xstar  = X.conj()
-        Xistar = Xi.conj()
-
-        # --- Per-frequency quantities ---
-        delta_arr = 1.0 / (4.0 * v_array)              # shape (n_v,)
-        fn_arr    = tcp * v_array
-        n_arr     = np.round(fn_arr).astype(int)        # shape (n_v,)
-        # Preserve original contract: abort when tcp*v is not close to an integer
-        if np.any(np.abs(fn_arr - np.round(fn_arr)) > 0.001):
-            raise ValueError('n is not an integer for some vCPMG values')
-
-        # Diagonal exponentials for forward propagator: exp(L_base * delta)
-        el1 = np.exp(L1_base * delta_arr)             # (n_v,) complex
-        el2 = np.exp(L2_base * delta_arr)             # (n_v,) complex
-
-        # eA_batch[k] = X @ diag([el1[k], el2[k]]) @ Xi
-        exp_l = np.stack([el1, el2], axis=1)          # (n_v, 2)
-        eA_batch = (X[np.newaxis] * exp_l[:, np.newaxis]) @ Xi   # (n_v, 2, 2)
-
-        # Diagonal exponentials for conjugate propagator: exp(L_base* * 2*delta)
-        el1s2 = np.exp(L1_base.conj() * 2.0 * delta_arr)  # (n_v,)
-        el2s2 = np.exp(L2_base.conj() * 2.0 * delta_arr)  # (n_v,)
-
-        # eAstar2_batch[k] = Xstar @ diag([el1s2[k], el2s2[k]]) @ Xistar
-        exp_ls2 = np.stack([el1s2, el2s2], axis=1)   # (n_v, 2)
-        eAstar2_batch = (Xstar[np.newaxis] * exp_ls2[:, np.newaxis]) @ Xistar  # (n_v, 2, 2)
-
-        # One full echo: B[k] = eA[k] @ eAstar2[k] @ eA[k]
-        B_batch = eA_batch @ eAstar2_batch @ eA_batch  # (n_v, 2, 2)
-
-        # B^n via analytical 2×2 eigendecomposition (avoids LAPACK overhead).
-        # For B = [[a,b],[c,d]], eigenvalues are:
-        #   half_tr = (a+d)/2,  disc = sqrt(((a-d)/2)^2 + b*c)
-        #   lb1 = half_tr + disc,  lb2 = half_tr - disc
-        # Eigenvectors (un-normalised): v1 = [b, lb1-a], v2 = [b, lb2-a]
-        # (fall back to [lb1-d, c] column when b ≈ 0 handled by disc being real-
-        #  valued branch choice; for 2×2 the Xb_inv formula is exact regardless)
-        a = B_batch[:, 0, 0]          # (n_v,)
-        b = B_batch[:, 0, 1]
-        c = B_batch[:, 1, 0]
-        d = B_batch[:, 1, 1]
-        half_tr = (a + d) * 0.5
-        disc    = np.sqrt(((a - d) * 0.5) ** 2 + b * c)  # complex OK
-        lb1 = half_tr + disc          # (n_v,) — first eigenvalue
-        lb2 = half_tr - disc          # (n_v,) — second eigenvalue
-        lb1_n = lb1 ** n_arr          # (n_v,)
-        lb2_n = lb2 ** n_arr
-
-        # B^n analytically: C = (lb1^n - lb2^n)/(lb1 - lb2) * B
-        #                     + (lb1 * lb2^n - lb2 * lb1^n)/(lb1 - lb2) * I
-        # This is the matrix-function formula for a 2×2 diagonalisable matrix.
-        denom = lb1 - lb2             # (n_v,)
-        # Guard against degenerate case (repeated eigenvalue): fall back scalar
-        if np.any(np.abs(denom) < 1e-14):
-            return np.array([self.R2_clc_matrix2(kAB, kBA, domega, R2_0, v, tcp)
-                             for v in v_array])
-        f1 = (lb1_n - lb2_n) / denom           # coefficient of B
-        f2 = (lb1 * lb2_n - lb2 * lb1_n) / denom  # coefficient of I
-        # C_batch[k] = f1[k]*B[k] + f2[k]*I
-        C_batch = f1[:, np.newaxis, np.newaxis] * B_batch
-        C_batch[:, 0, 0] += f2
-        C_batch[:, 1, 1] += f2
-
-        # Extract R2eff from ground-state magnetisation decay
-        pB  = kAB / (kAB + kBA)
-        M0_0 = 1.0 - pB
-        M0_1 = pB
-        M0  = np.array([M0_0, M0_1], dtype=complex)
-        MT  = C_batch @ M0                             # (n_v, 2)
-
-        R2_arr = (-1.0 / (4.0 * n_arr * delta_arr)) * np.log(MT[:, 0] / M0_0)
-        return np.real(R2_arr)
-
     def R2_clc_matrix2_batch(self, kAB, kBA, domega_arr, R2_0_arr,
                              v_array, delta_arr, n_arr, tcp):
         """Vectorised R2eff over many residues *and* all CPMG frequencies.
 
-        Generalises R2_clc_matrix2_vec to a batch of curves that share the same
-        CPMG frequency grid (and tcp).  Per-residue quantities (domega, R2_0)
+        Evaluates a batch of curves that share the same CPMG frequency grid
+        (and tcp).  Per-residue quantities (domega, R2_0)
         vary along the curve axis C; the eigen-decomposition and propagator are
         evaluated for the full (C, V) grid in one set of array operations.
 
@@ -697,7 +561,7 @@ class CPMG_model:
         # One full CPMG echo, shape (C, V, 2, 2)
         B = eA @ eAstar2 @ eA
 
-        # B^n via the analytic 2x2 matrix-function formula (see R2_clc_matrix2_vec)
+        # B^n via the analytic 2x2 matrix-function formula (diagonalisable 2x2)
         a = B[:, :, 0, 0]; b = B[:, :, 0, 1]
         c = B[:, :, 1, 0]; d = B[:, :, 1, 1]
         half_tr = (a + d) * 0.5
@@ -939,7 +803,7 @@ class CPMG_model:
         if self.verbose:
             # Guard against dof ≤ 0 (can happen with too few data points)
             red_chi2 = self.chi2 / self.dof if self.dof > 0 else float('nan')
-            if self.model == 'Matrix' or self.model == 'London':
+            if self.model in ('Matrix', 'London'):
                 print('kAB=%8.3f kBA=%8.3f  red_chi2=%12.3f  dof=%d  nv=%d  np=%d'
                       % (kAB, kBA, red_chi2, self.dof, len(R2_residuals), len(p)))
             elif self.model == 'Meiboom':
@@ -968,7 +832,7 @@ class CPMG_model:
         # --- Build initial parameter vector p0 ---
         p0 = []
 
-        if self.model == 'Matrix' or self.model == 'London':
+        if self.model in ('Matrix', 'London'):
             p0.append(self.kAB)  # global: kAB
             p0.append(self.kBA)  # global: kBA
         elif self.model == 'Meiboom':
@@ -988,7 +852,7 @@ class CPMG_model:
                   'Standard deviations set to 0.')
 
         # --- Update global parameters from solution ---
-        if self.model == 'Matrix' or self.model == 'London':
+        if self.model in ('Matrix', 'London'):
             self.kAB     = p1[0]
             self.kBA     = p1[1]
             self.kAB_std = sqrt(covar[0][0]) if covar is not None else 0.0
@@ -1003,10 +867,6 @@ class CPMG_model:
     # -------------------------------------------------------------------------
     # Individual fitting and AIC-based model comparison
     # -------------------------------------------------------------------------
-
-    def _nGlobal(self):
-        """Number of shared (global) exchange parameters for the current model."""
-        return 1 if self.model == 'Meiboom' else 2   # kex   vs   kAB, kBA
 
     def _build_p0_current(self):
         """Build the parameter vector from the current global + local state.
@@ -1234,7 +1094,7 @@ class CPMG_model:
             np.ndarray: Parameter vector ready to pass to errFunc.
         """
         p0 = []
-        if self.model == 'Matrix' or self.model == 'London':
+        if self.model in ('Matrix', 'London'):
             kAB = pB_val * kex_val
             kBA = kex_val - kAB
             p0.append(kAB)
@@ -1292,7 +1152,7 @@ class CPMG_model:
 
         # --- Apply the best-guess values ---
         print('Initial values:')
-        if self.model == 'Matrix' or self.model == 'London':
+        if self.model in ('Matrix', 'London'):
             self.kAB = pB[ii_pB] * kex[ii_kex]
             self.kBA = kex[ii_kex] - self.kAB
             self.init_dd(csd[ii_csd])
@@ -1307,7 +1167,16 @@ class CPMG_model:
     # Reporting
     # -------------------------------------------------------------------------
 
-    def getLogBuffer(self):
+    def _kex_pB(self):
+        """Derive (kex, kex_std, pB, pB_std) from kAB/kBA and their stds."""
+        kex     = self.kAB + self.kBA
+        kex_std = sqrt(self.kAB_std ** 2 + self.kBA_std ** 2)
+        pB      = self.kAB / kex
+        pB_std  = sqrt(self.kAB_std ** 2 * (1.0 / kex - self.kAB / kex ** 2) ** 2
+                       + self.kBA_std ** 2 * (self.kAB / kex ** 2) ** 2)
+        return kex, kex_std, pB, pB_std
+
+    def getLogBuffer(self, config_path=None):
         """Build a formatted text report of the fitting results.
 
         Includes the program header, run metadata (user, hostname, timestamp),
@@ -1333,9 +1202,10 @@ class CPMG_model:
         # Echo the input config file for full reproducibility
         buf += '********\n\n'
         buf += 'Input file:\n'
-        with open(argv[1], 'r') as file1:
-            for line in file1.readlines():
-                buf += line
+        if config_path is None:
+            config_path = argv[1]  # fallback to the CLI arg when not supplied
+        with open(config_path, 'r') as file1:
+            buf += file1.read()
         buf += '********\n\n'
 
         # Dataset summary: for each field, list experimental and calculated R2
@@ -1377,11 +1247,7 @@ class CPMG_model:
         # Per-exchange-regime parameter summary
         if self.dataset.exchange == 'slow':
             # Derive kex and pB from the individual rate constants
-            kex     = self.kAB + self.kBA
-            kex_std = sqrt(self.kAB_std ** 2 + self.kBA_std ** 2)
-            pB      = self.kAB / kex
-            pB_std  = sqrt(self.kAB_std ** 2 * (1.0 / kex - self.kAB / kex ** 2) ** 2
-                           + self.kBA_std ** 2 * (self.kAB / kex ** 2) ** 2)
+            kex, kex_std, pB, pB_std = self._kex_pB()
 
             buf += 'kAB: %8.3f  +-  %8.3f\n' % (self.kAB, self.kAB_std)
             buf += 'kBA: %8.3f  +-  %8.3f\n' % (self.kBA, self.kBA_std)
@@ -1439,9 +1305,8 @@ class CPMG_model:
             if r.active:
                 figure(figsize=(8, 6))
 
-                # Cycle through a fixed colour set; pop from the end
+                # Fixed colour set, indexed by curve position
                 colorsSet = ['b', 'g', 'r', 'c', 'm', 'y']
-                colorsSet.reverse()
 
                 max_x = []
                 min_y = []
@@ -1451,12 +1316,8 @@ class CPMG_model:
                     dspCurve = r.dspCurves[i]
                     max_x.append(max(dspCurve.v))
 
-                    # Assign the next colour (fall back to black if list is empty)
-                    c = 'k'
-                    try:
-                        c = colorsSet.pop()
-                    except Exception:
-                        pass
+                    # Assign colour by position (fall back to black when exhausted)
+                    c = colorsSet[i] if i < len(colorsSet) else 'k'
 
                     # Plot experimental data as dots with error bars
                     errorbar(dspCurve.v, dspCurve.R2exp,
@@ -1514,22 +1375,16 @@ class CPMG_model:
             phi_std^2 = (dd_std * 2*pB*(1-pB)*dd)^2
                       + (pB_std * (1-2*pB)*dd^2)^2
         """
-        # Compute the total exchange rate and its uncertainty
-        self.kex     = self.kAB + self.kBA
-        self.kex_std = sqrt(self.kAB_std ** 2 + self.kBA_std ** 2)
-
-        # Minor-state population pB and its uncertainty (from error propagation)
-        pB     = self.kAB / self.kex
-        pB_std = sqrt(self.kAB_std ** 2 * (1.0 / self.kex - self.kAB / self.kex ** 2) ** 2
-                      + self.kBA_std ** 2 * (self.kAB / self.kex ** 2) ** 2)
+        # Total exchange rate, its uncertainty, and minor-state population pB
+        # (with error propagation) — also stores kex / kex_std on self.
+        self.kex, self.kex_std, pB, pB_std = self._kex_pB()
 
         for r in self.dataset.rsds:
             if r.active:
                 # Save original csd before overwriting r.dd with phi
                 dd_orig     = r.dd
                 dd_std_orig = r.dd_std
-                r.dd_copy     = dd_orig      # kept for plot/report reconstruction
-                r.dd_std_copy = dd_std_orig
+                r.dd_copy   = dd_orig        # kept for plot/report reconstruction
 
                 # Replace dd with phi = pB*(1-pB)*dd^2
                 r.dd = pB * (1.0 - pB) * dd_orig ** 2
@@ -1618,5 +1473,3 @@ class CPMG_model:
                     })
 
         return all_data
-
-### the end

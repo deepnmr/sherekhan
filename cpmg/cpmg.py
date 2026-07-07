@@ -12,13 +12,6 @@ Residue         : A protein residue observed at one or more field strengths.
 CPMGDataSet     : Collection of all residues and their dispersion curves.
 """
 
-from math import sqrt
-
-# Gyromagnetic ratios (rad s^-1 T^-1) — kept here for reference but not used
-# gamma_1H  = 267.513
-# gamma_15N = -27.116
-# ratio_g1H_15N = 9.8655
-
 
 class DispersionCurve:
     """R2 relaxation-dispersion data measured at a single magnetic field.
@@ -47,14 +40,6 @@ class DispersionCurve:
         self.R2stddev = []  # 1/s  — experimental uncertainties
 
         self.exchange = 'undef'  # exchange regime, set later by model selection
-
-    def info(self):
-        """Print a formatted summary of this dispersion curve to stdout."""
-        print('--- B0 field: %8.3f [MHz]' % (self.field))
-        print('-        tcp: %8.3f [ms]' % ((1000.0 * self.tcp)))
-        for i in range(0, len(self.v)):
-            print('%8.3f  %8.3f %8.3f' % (self.v[i], self.R2exp[i], self.R2stddev[i]))
-        print('---')
 
 
 class Residue:
@@ -135,65 +120,63 @@ class CPMGDataSet:
         Args:
             fileName (str): Path to the .dat input file.
         """
-        inFile = open(fileName, 'r')
+        with open(fileName, 'r') as inFile:
 
-        # First line: static field strength in MHz
-        line = inFile.readline()
-        currentField = float(line)
-        self.fields.append(currentField)
-
-        # Second line: CPMG pulse delay (tcp) in seconds
-        line = inFile.readline()
-        currentTcp = float(line)
-        self.tcps.append(currentTcp)
-
-        # Third line is the column-header comment — skip it
-        line = inFile.readline()
-
-        # Read residue blocks until end of file
-        line = inFile.readline()
-
-        while line:
-            sline = line.split()
-            if len(sline) == 2:
-                # Lines with exactly 2 tokens are residue label lines: "# <label>"
-                resLabel = sline[1]
-
-            # Find an existing Residue with this label, or create a new one
-            res = None
-            for r in self.rsds:
-                if r.label == resLabel:
-                    res = r
-                    break
-            if res is None:
-                res = Residue()
-                res.label = resLabel
-                self.rsds.append(res)
-
-            # Read the dispersion curve data points that follow the label line
+            # First line: static field strength in MHz
             line = inFile.readline()
-            sline = line.split()
-            dc = DispersionCurve()
-            dc.field = currentField
-            dc.tcp = currentTcp
-            while len(sline) == 3:
-                # Each data line: nu_CPMG(Hz)  R2exp(1/s)  R2stddev(1/s)
-                dc.v.append(float(sline[0]))
-                dc.R2exp.append(float(sline[1]))
-                dc.R2stddev.append(float(sline[2]))
+            currentField = float(line)
+            self.fields.append(currentField)
+
+            # Second line: CPMG pulse delay (tcp) in seconds
+            line = inFile.readline()
+            currentTcp = float(line)
+            self.tcps.append(currentTcp)
+
+            # Third line is the column-header comment — skip it
+            line = inFile.readline()
+
+            # Read residue blocks until end of file
+            line = inFile.readline()
+
+            while line:
+                sline = line.split()
+                if len(sline) == 2:
+                    # Lines with exactly 2 tokens are residue label lines: "# <label>"
+                    resLabel = sline[1]
+
+                # Find an existing Residue with this label, or create a new one
+                res = None
+                for r in self.rsds:
+                    if r.label == resLabel:
+                        res = r
+                        break
+                if res is None:
+                    res = Residue()
+                    res.label = resLabel
+                    self.rsds.append(res)
+
+                # Read the dispersion curve data points that follow the label line
                 line = inFile.readline()
-                if line:
-                    sline = line.split()
-                else:
-                    sline = []
-            res.dspCurves.append(dc)
+                sline = line.split()
+                dc = DispersionCurve()
+                dc.field = currentField
+                dc.tcp = currentTcp
+                while len(sline) == 3:
+                    # Each data line: nu_CPMG(Hz)  R2exp(1/s)  R2stddev(1/s)
+                    dc.v.append(float(sline[0]))
+                    dc.R2exp.append(float(sline[1]))
+                    dc.R2stddev.append(float(sline[2]))
+                    line = inFile.readline()
+                    if line:
+                        sline = line.split()
+                    else:
+                        sline = []
+                res.dspCurves.append(dc)
 
         # Discard any dispersion curves that ended up with no data points
         # (can happen when a residue label appears but has no following data)
         for r in self.rsds:
             r.dspCurves = [dc for dc in r.dspCurves if len(dc.v) > 0]
-
-        inFile.close()
 
     # -------------------------------------------------------------------------
     # Model selection helpers
@@ -223,18 +206,9 @@ class CPMGDataSet:
             return
 
         # Identify the lowest and highest field indices
-        B0_low_index = 0
-        B0_high_index = 0
-        min_field = self.fields[0]
-        max_field = self.fields[0]
-        for i in range(0, len(self.fields)):
-            cf = self.fields[i]
-            if cf < min_field:
-                min_field = cf
-                B0_low_index = i
-            if cf > max_field:
-                max_field = cf
-                B0_high_index = i
+        # First occurrence of the lowest / highest field (matches strict-< / strict-> scan)
+        B0_low_index = self.fields.index(min(self.fields))
+        B0_high_index = self.fields.index(max(self.fields))
 
         for r in self.rsds:
             # Guard: residue must have dispersion curves at both field indices
@@ -246,13 +220,8 @@ class CPMGDataSet:
             B0_high = r.dspCurves[B0_high_index].field
 
             # Rex estimate = max(R2) - min(R2) at each field
-            Rex_low_maxi = r.dspCurves[B0_low_index].R2exp.index(max(r.dspCurves[B0_low_index].R2exp))
-            Rex_low_mini = r.dspCurves[B0_low_index].R2exp.index(min(r.dspCurves[B0_low_index].R2exp))
-            Rex_low = r.dspCurves[B0_low_index].R2exp[Rex_low_maxi] - r.dspCurves[B0_low_index].R2exp[Rex_low_mini]
-
-            Rex_high_maxi = r.dspCurves[B0_high_index].R2exp.index(max(r.dspCurves[B0_high_index].R2exp))
-            Rex_high_mini = r.dspCurves[B0_high_index].R2exp.index(min(r.dspCurves[B0_high_index].R2exp))
-            Rex_high = r.dspCurves[B0_high_index].R2exp[Rex_high_maxi] - r.dspCurves[B0_high_index].R2exp[Rex_high_mini]
+            Rex_low  = max(r.dspCurves[B0_low_index].R2exp)  - min(r.dspCurves[B0_low_index].R2exp)
+            Rex_high = max(r.dspCurves[B0_high_index].R2exp) - min(r.dspCurves[B0_high_index].R2exp)
 
             # Guard: avoid division by zero for flat curves or identical fields
             field_diff = B0_high - B0_low
@@ -349,16 +318,3 @@ class CPMGDataSet:
             rd['flag'] = 'on' if r.active else 'off'
             rdlist.append(rd)
         return rdlist
-
-    def info(self):
-        """Print all datasets (fields, tcp, and R2 curves) to stdout."""
-        for i in range(0, len(self.fields)):
-            print(' % 8.3f' % self.fields[i])
-            print(' % 8.3f' % self.tcps[i])
-            print('#v_cpmg(Hz)        R2(1/s)      Esd(R2)')
-            for r in self.rsds:
-                print('# ' + r.label)
-                for dspC in r.dspCurves:
-                    if dspC.field == self.fields[i]:
-                        for j in range(0, len(dspC.v)):
-                            print('%8.3f %8.3f %8.3f' % (dspC.v[j], dspC.R2exp[j], dspC.R2stddev[j]))
