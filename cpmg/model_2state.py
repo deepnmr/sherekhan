@@ -47,7 +47,8 @@ from .cpmg import CPMGDataSet
 from scipy.linalg import expm          # matrix exponential
 from numpy.linalg import matrix_power  # integer matrix power
 from numpy import diag
-from os import getlogin, uname
+from os import uname
+from getpass import getuser
 from time import ctime
 
 
@@ -1193,7 +1194,7 @@ class CPMG_model:
 
         # Run metadata: user, hostname, and current time
         buf += '********\n'
-        user     = getlogin()
+        user     = getuser()  # getlogin() needs a tty; getuser() reads env, works headless
         hostname = uname()[1]
         buf += 'User: %s@%s\n' % (user, hostname)
         buf += '%s\n' % ctime()
