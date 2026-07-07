@@ -1,5 +1,6 @@
 # ShereKhan 1.2.0
 
+[![CI](https://github.com/deepnmr/sherekhan/actions/workflows/ci.yml/badge.svg)](https://github.com/deepnmr/sherekhan/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 NMR CPMG relaxation-dispersion curve analysis — two-state chemical-exchange fitting.
