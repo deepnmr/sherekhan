@@ -138,11 +138,18 @@ class CPMGDataSet:
             # Read residue blocks until end of file
             line = inFile.readline()
 
+            resLabel = None  # last-seen residue label; None until the first label line
             while line:
                 sline = line.split()
                 if len(sline) == 2:
                     # Lines with exactly 2 tokens are residue label lines: "# <label>"
                     resLabel = sline[1]
+
+                # A data block must be preceded by a label line; fail clearly if not
+                if resLabel is None:
+                    raise ValueError(
+                        '%s: expected a residue label line ("# <label>") but got: %r'
+                        % (fileName, line.rstrip()))
 
                 # Find an existing Residue with this label, or create a new one
                 res = None
