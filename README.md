@@ -42,6 +42,9 @@ python sk_run.py run.conf
 
 See [`USAGE.md`](USAGE.md) for full documentation (config format, models, AIC comparison).
 
+Step-by-step manual (individual vs global fit + jackknife validation):
+[English](MANUAL.en.md) · [한국어](MANUAL.ko.md).
+
 ## Models
 
 | Model     | Regime      | Description                                        |
