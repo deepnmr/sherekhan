@@ -1,5 +1,7 @@
 # ShereKhan 단계별 매뉴얼 — Individual vs Global fit + Jackknife 검증
 
+> 🌐 **한국어** · [English](MANUAL.en.md)
+
 CPMG 완화 분산 데이터에서 **모든 잔기가 하나의 교환 과정(kex)을 공유하는지(global fit)**,
 아니면 **잔기마다 자기 kex를 갖는지(individual fit)**를 판정하고, **잭나이프**로 global fit의
 견고성을 검증하는 실전 절차.
@@ -65,7 +67,7 @@ sk-prepare f60.dat f90.dat > run.conf
 
 | 필드 | 값 | 의미 |
 |------|-----|------|
-| `exchange` | `"fast"` / `"slow"` | 교환 체제 |
+| `exchange` | `"fast"` / `"slow"` / `"undefined"` | 교환 체제; `"undefined"`(애매하거나 단일 필드 데이터)는 모델 `Matrix`와 짝이 되고 모든 잔기를 자동으로 `flag: "off"`로 둠 — 수동으로 켜야 함 |
 | `model` | `"Meiboom"` / `"London"` / `"Matrix"` | 피팅 모델 (Matrix=정확, 느림) |
 | `init.mode` | `"guess"` / `"values"` | 초기값: 그리드 탐색 / 직접 지정 |
 | `residues[].flag` | `"on"` / `"off"` | 잔기 포함 여부 |
