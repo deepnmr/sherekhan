@@ -13,10 +13,15 @@ export PATH=$ROOT_DIR:$PATH
 echo "Root dir: $ROOT_DIR"
 echo "Script dir: $SCRIPT_DIR"
 
+echo "Running unit self-checks..."
+python3 "$SCRIPT_DIR/test_parse.py"
+python3 "$SCRIPT_DIR/test_globalfit.py"
+
 cd "$SCRIPT_DIR/fast"
 echo "Running fast tests..."
 python3 ../../sk_run.py fast.conf
 python3 ../../sk_run.py fast-matrix.conf
+python3 ../../sk_run.py fast-globalfit.conf   # individual-vs-global + jackknife
 
 cd "$SCRIPT_DIR/slow"
 echo "Running slow tests..."

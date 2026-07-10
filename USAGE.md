@@ -122,7 +122,8 @@ python sk_run.py project.conf
 | `model` | `"Meiboom"` / `"Matrix"` / `"London"` | 피팅 모델 |
 | `init.mode` | `"guess"` / `"values"` | 초기값 설정 방식 |
 | `residues[].flag` | `"on"` / `"off"` | 해당 잔기 분석 포함 여부 |
-| `compare_aic` | `true` / `false` | global vs individual fit을 AIC로 비교 (기본 `false`) |
+| `compare_aic` | `true` / `false` | global vs individual fit을 AIC로 비교 + 잔기별 우열 판정 (`sk_prepare` 기본 `true`, 키 없으면 `false`) |
+| `jackknife` | `true` / `false` | leave-one-residue-out 잭나이프로 global fit 검증 (`sk_prepare` 기본 `true`, 키 없으면 `false`) |
 
 ### 초기값 직접 지정 (`init.mode = "values"`)
 
@@ -179,25 +180,82 @@ AICc = AIC + 2k(k+1) / (n - k - 1)      # 소표본 보정
 가중 잔차 (obs-calc)/sigma를 쓰므로 chi²가 -2 ln L 와 상수 차이. AICc가 낮은 모델이 선호되며,
 Akaike weight로 상대적 지지도를 표시한다.
 
-**출력:** `.log` 파일 끝과 stdout에 비교 표 + 잔기별 individual 파라미터.
+**출력:** `.log` 파일 끝과 stdout에 (1) 전체 데이터셋 비교 표, (2) 잔기별 individual 파라미터,
+(3) **잔기별 우열 판정 표**.
 
 ```
 Model               chi2      k      n          AIC         AICc
-global            75.065     17    110      109.065      115.718
-individual        70.073     25    110      120.073      135.549
+global            86.139     16    110      118.139      123.989
+individual        83.084     20    110      123.084      132.523
 ---
-delta AICc (individual - global):       19.831
-Akaike weights (AICc): global=1.0000  individual=0.0000
-Preferred model: global
+delta AICc (individual - global):        8.534
+Akaike weights (AICc): global=0.9862  individual=0.0138
+Preferred model (whole dataset): global
 ```
 
-> delta AICc < 0 이면 individual, > 0 이면 global 선호.
-> 모든 잔기가 같은 교환 과정을 보고하면 global이, 잔기마다 다른 kex를 가지면 individual이 선호된다.
+### 잔기별 individual vs global 판정
+
+전체 비교와 별도로, **잔기마다** 어느 쪽이 나은지 판정한다. 각 잔기의 global chi²
+기여분(공유 kex 하에서의 그 잔기 잔차)과 individual chi²(자기 kex로 단독 피팅)을
+잔기 단위 AICc로 비교한다. 파라미터 수 규약: individual은 자기 교환 파라미터(Meiboom 1개,
+Matrix/London 2개)까지 비용을 지불하고, global은 공유 교환 속도를 무료로 빌린다 —
+즉 "이 잔기가 자기만의 kex를 가질 값어치가 있는가?"를 묻는다.
+
+```
+ resId    chi2_glob   chi2_indiv        dAICc       z(kex)     better
+   K1f       22.488       20.989        1.521        -1.43     global
+   L2f       10.101        9.471        2.390         0.80     global
+   ...
+Residues preferring global: 5   preferring individual: 0
+```
+
+> `dAICc` = AICc(individual) − AICc(global): **> 0 → global**, **< 0 → individual** 선호.
+> `z(kex)` = (kex_individual − kex_global) / σ(kex_individual): **|z| > 2**이면 그 잔기가
+> 공유 kex와 통계적으로 불일치(잠재적 outlier).
+
+---
+
+## 잭나이프로 Global Fit 검증 (Jackknife)
+
+Config에 `"jackknife": true`를 추가하면 global fit의 견고성을 검증한다.
+활성 잔기를 하나씩 제외하고 global fit을 재실행(leave-one-residue-out)하여, 공유 교환
+속도 kex가 특정 잔기에 얼마나 의존하는지 측정한다.
+
+```
+kex (full global fit):            1134.895
+kex (jackknife mean):             1133.920
+kex (bias-corrected):             1138.793
+jackknife bias:                     -3.899
+jackknife std error (kex):          67.180
+relative std error:                  5.92%
+---
+ resId      kex(-res)      delta_kex        |z|
+   K1f       1166.713        -31.818       0.47
+   N4f       1179.261        -44.366       0.66
+   ...
+(* = influential: dropping this residue shifts kex by > 2 jackknife SE)
+```
+
+계산식 (표준 leave-one-out 잭나이프, N = 활성 잔기 수):
+
+```
+delta_kex_i = kex_full - kex_(-i)                        # 잔기 i 제외 시 kex 변화
+bias        = (N-1) * (mean(kex_(-i)) - kex_full)
+SE          = sqrt( (N-1)/N * sum_i (kex_(-i) - mean)^2 )
+```
+
+> **relative SE가 작고** `*`로 표시된 잔기가 없으면 global fit은 견고하다 —
+> 어느 한 잔기도 공유 kex를 지배하지 않는다는 뜻.
+> 특정 잔기가 `*`로 표시되면 그 잔기를 빼면 kex가 2 SE 이상 흔들린다 → outlier 후보.
 
 ```bash
-# 실행 (config에 compare_aic: true 설정 후)
+# 실행 (config에 compare_aic / jackknife 설정 후 — sk_prepare는 기본 활성화)
 python sk_run.py project.conf
 ```
+
+**stdout JSON:** 잔기 결과(마지막 `#####` 줄)에 더해, 활성화 시
+`##### model_comparison`과 `##### jackknife` 라벨의 JSON 블록이 앞쪽에 출력된다.
+잔기 목록 줄은 마지막에 그대로 유지되어 기존 파서와 호환된다.
 
 ---
 

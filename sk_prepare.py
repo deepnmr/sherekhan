@@ -55,7 +55,9 @@ def main():
     newDict = {
         'Project Name': 'noname',
         'comments': '',
-        'init': {'mode': 'guess'}   # default to grid-search initialisation
+        'init': {'mode': 'guess'},  # default to grid-search initialisation
+        'compare_aic': True,        # per-residue individual-vs-global comparison
+        'jackknife': True,          # leave-one-residue-out validation of global fit
     }
     expList = []  # will hold the paths of the loaded .dat files
 
