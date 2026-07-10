@@ -14,3 +14,8 @@ test/**/*.pdf
 
 # Generated synthetic data
 synth-*.dat
+
+# Demo generated outputs (reproducible via demo/run_demo.sh)
+demo/global/
+demo/individual/
+demo/mixed/
