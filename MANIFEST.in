@@ -1,5 +1,7 @@
 include LICENSE
 include README.md
 include USAGE.md
+include MANUAL.en.md
+include MANUAL.ko.md
 include requirements.txt
 recursive-include test *.conf *.dat run_tests.sh

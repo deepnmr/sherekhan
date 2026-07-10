@@ -40,9 +40,9 @@ python sk_prepare.py synth-60.dat synth-90.dat > run.conf
 python sk_run.py run.conf
 ```
 
-See [`USAGE.md`](USAGE.md) for full documentation (config format, models, AIC comparison).
+Reference (config format, models, data format): [`USAGE.md`](USAGE.md).
 
-Step-by-step manual (individual vs global fit + jackknife validation):
+Step-by-step manual — individual vs global fit, AIC comparison, jackknife validation:
 [English](MANUAL.en.md) · [한국어](MANUAL.ko.md).
 
 ## Models
