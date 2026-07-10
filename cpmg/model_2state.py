@@ -830,6 +830,9 @@ class CPMG_model:
         # Cache numpy arrays so errFunc can use pre-allocated v_arr, R2exp_arr, R2stddev_arr
         self._cache_arrays()
 
+        # Invalidate the leave-one-out cache: a new global solution changes it.
+        self._loo_cache = None
+
         # --- Build initial parameter vector p0 ---
         p0 = []
 
@@ -842,7 +845,8 @@ class CPMG_model:
         self.getLocalParams(p0)  # append per-residue dd and R2_0 values
 
         # --- Perform optimisation ---
-        print(p0)
+        if self.verbose:
+            print(p0)
         out = leastsq(self.errFunc, x0=p0, full_output=1)
 
         p1    = out[0]  # solution vector
@@ -863,7 +867,8 @@ class CPMG_model:
             self.kex_std = sqrt(covar[0][0]) if covar is not None else 0.0
 
         self.setLocalParams(p1, covar)  # unpack per-residue parameters
-        print()
+        if self.verbose:
+            print()
 
     # -------------------------------------------------------------------------
     # Individual fitting and AIC-based model comparison
@@ -924,13 +929,14 @@ class CPMG_model:
                 r.active = (k == i)
             self._cache_arrays()   # rebuild batch plan for the single residue
 
-            p0  = self._build_p0_current()
-            out = leastsq(self.errFunc, x0=p0, full_output=1)
-            p1  = out[0]
-            fvec = out[2]['fvec']              # residuals at the solution
-            chi2 = float(np.dot(fvec, fvec))
-            npar = len(p1)
-            nvar = len(fvec)
+            p0    = self._build_p0_current()
+            out   = leastsq(self.errFunc, x0=p0, full_output=1)
+            p1    = out[0]
+            covar = out[1]                     # None when the fit is singular
+            fvec  = out[2]['fvec']             # residuals at the solution
+            chi2  = float(np.dot(fvec, fvec))
+            npar  = len(p1)
+            nvar  = len(fvec)
 
             # Decode fitted parameters for this residue
             r = rsds[i]
@@ -938,12 +944,19 @@ class CPMG_model:
             if self.model == 'Meiboom':
                 kex = p1[0]
                 rec['kex'] = kex
+                rec['kex_std'] = sqrt(covar[0][0]) if covar is not None else 0.0
                 rec['phi'] = p1[1]
                 rec['R2_0'] = list(p1[2:])
             else:
                 kAB, kBA = p1[0], p1[1]
                 kex = kAB + kBA
                 rec['kex'] = kex
+                # kex = kAB + kBA → var(kex) = var(kAB) + var(kBA) + 2 cov(kAB,kBA)
+                if covar is not None:
+                    rec['kex_std'] = sqrt(max(
+                        covar[0][0] + covar[1][1] + 2.0 * covar[0][1], 0.0))
+                else:
+                    rec['kex_std'] = 0.0
                 rec['pB']  = kAB / kex if kex != 0 else float('nan')
                 rec['dd']  = p1[2]
                 rec['R2_0'] = list(p1[3:])
@@ -1015,6 +1028,65 @@ class CPMG_model:
         k_i    = sum(d['npar'] for d in indiv)
         aic_i, aicc_i = self._aic(chi2_i, k_i, n)
 
+        # --- Per-residue global-vs-individual preference ---
+        # Attribute to each residue its own chi2 contribution under the shared
+        # global solution, then score global vs individual for that residue.
+        # Parameter-count convention: the individual model pays for its extra
+        # exchange parameters (nExch), the global model borrows the shared
+        # exchange rate for free (local params only).  So the AIC per residue
+        # answers "is this residue's own exchange rate worth its cost?".
+        nExch      = 1 if self.model == 'Meiboom' else 2
+        kex_global = self.kex if self.model == 'Meiboom' else self.kAB + self.kBA
+        pr_glob    = self._per_residue_global_chi2()  # {label: (chi2, n)}
+        # Leave-one-out kex per residue: the unbiased reference for z(kex).
+        # Scoring a residue against the full global kex is circular (that kex
+        # was fitted using the residue itself), so use the kex fitted from the
+        # other residues only.  Falls back to the full global kex when LOO is
+        # undefined (a single active residue).
+        loo_kex = self._leave_one_out_kex()  # {label: kex_without_residue} or {}
+
+        for d in indiv:
+            chi2_g_r, n_r = pr_glob[d['label']]
+            k_i_r = d['npar']
+            k_g_r = k_i_r - nExch          # global shares the exchange param(s)
+            aic_g_r, aicc_g_r = self._aic(chi2_g_r, k_g_r, n_r)
+            aic_i_r, aicc_i_r = self._aic(d['chi2'], k_i_r, n_r)
+
+            # Prefer the corrected AICc; fall back to AIC if AICc is undefined
+            # (n - k - 1 <= 0 for a data-starved residue).
+            if aicc_g_r == float('inf') or aicc_i_r == float('inf'):
+                sel_g, sel_i = aic_g_r, aic_i_r
+            else:
+                sel_g, sel_i = aicc_g_r, aicc_i_r
+            preferred_r = 'global' if sel_g <= sel_i else 'individual'
+
+            # Per-residue Akaike weights (from the selection metric)
+            m_min = min(sel_g, sel_i)
+            wg_r  = exp(-0.5 * (sel_g - m_min))
+            wi_r  = exp(-0.5 * (sel_i - m_min))
+            ws    = wg_r + wi_r
+            wg_r, wi_r = wg_r / ws, wi_r / ws
+
+            kstd = d.get('kex_std', 0.0)
+            d['n']            = n_r
+            d['chi2_global']  = chi2_g_r
+            d['k_global']     = k_g_r
+            d['k_indiv']      = k_i_r
+            d['aic_global']   = aic_g_r
+            d['aic_indiv']    = aic_i_r
+            d['aicc_global']  = aicc_g_r
+            d['aicc_indiv']   = aicc_i_r
+            d['delta_aicc']   = sel_i - sel_g     # > 0 → global preferred
+            d['weight_global'] = wg_r
+            d['weight_indiv']  = wi_r
+            d['preferred']    = preferred_r
+            d['kex_global']   = kex_global
+            # z-score of the individual kex against the leave-one-out reference
+            # (kex fitted from the other residues); unbiased for outlier testing.
+            kex_ref = loo_kex.get(d['label'], kex_global)
+            d['kex_ref'] = kex_ref
+            d['z_kex'] = (d['kex'] - kex_ref) / kstd if kstd > 0 else float('nan')
+
         # Akaike weights from the (small-sample) AICc
         aicc_min = min(aicc_g, aicc_i)
         wg = exp(-0.5 * (aicc_g - aicc_min))
@@ -1023,6 +1095,12 @@ class CPMG_model:
         wg, wi = wg / wsum, wi / wsum
 
         preferred = 'global' if aicc_g <= aicc_i else 'individual'
+
+        n_pref_global = sum(1 for d in indiv if d['preferred'] == 'global')
+        n_pref_indiv  = len(indiv) - n_pref_global
+
+        # Restore the reported global-fit statistics clobbered by the sub-fits.
+        self._refresh_global_stats()
 
         return {
             'global':     {'chi2': chi2_g, 'k': k_g, 'n': n,
@@ -1034,8 +1112,218 @@ class CPMG_model:
             'weight_global':     wg,
             'weight_individual': wi,
             'preferred':   preferred,
+            'n_pref_global':     n_pref_global,
+            'n_pref_individual': n_pref_indiv,
             'per_residue': indiv,
         }
+
+    def _refresh_global_stats(self):
+        """Recompute self.chi2 / dof / npar / nvar for the full global solution.
+
+        Individual fitting, the per-residue comparison, and the jackknife all
+        make intermediate leastsq / errFunc calls that overwrite these scalars
+        with sub-fit values.  Call this after such analyses so getLogBuffer
+        reports the true full-active global-fit statistics.  Per-residue and
+        global parameters are already restored by those methods; this only
+        re-evaluates errFunc on the full active set to refresh the scalars.
+        """
+        self._cache_arrays()
+        self.errFunc(self._build_p0_current())
+
+    def _leave_one_out_kex(self):
+        """Per-residue leave-one-out global exchange rate.
+
+        Refits the global model with each active residue removed in turn and
+        records the shared kex fitted from the *other* residues only.  This is
+        the unbiased reference for judging whether a residue disagrees with the
+        rest (the full global kex is contaminated by the residue itself), and it
+        is exactly the per-residue quantity the jackknife needs.  The result is
+        cached per active-residue set so the comparison and the jackknife share
+        the N refits.  The full global solution is restored before returning.
+
+        Returns:
+            dict: {residue_label: kex_without_that_residue} for each active
+            residue.  Empty dict when fewer than 2 residues are active
+            (leave-one-out is ill-posed — nothing left to fit).
+        """
+        rsds = self.dataset.rsds
+        active_labels = tuple(r.label for r in rsds if r.active)
+        if len(active_labels) < 2:
+            return {}
+
+        cache = getattr(self, '_loo_cache', None)
+        if cache is not None and cache[0] == active_labels:
+            return dict(cache[1])
+
+        # Snapshot the full global solution for warm-start and restore.
+        snap_active = [r.active for r in rsds]
+        snap_local  = [(r.dd, getattr(r, 'dd_std', 0.0),
+                        list(r.R2_0), list(r.R2_0_std)) for r in rsds]
+        snap_glob   = (self.kAB, self.kBA, self.kex)
+        snap_std    = (self.kAB_std, self.kBA_std, self.kex_std)
+        snap_verbose = self.verbose
+
+        def restore_full():
+            for k, r in enumerate(rsds):
+                r.active = snap_active[k]
+                dd, dd_std, r2_0, r2_0_std = snap_local[k]
+                r.dd = dd
+                r.dd_std = dd_std
+                r.R2_0 = list(r2_0)
+                r.R2_0_std = list(r2_0_std)
+            self.kAB, self.kBA, self.kex = snap_glob
+            self.kAB_std, self.kBA_std, self.kex_std = snap_std
+
+        self.verbose = False   # keep the N refits quiet
+        out = {}
+        for i, r in enumerate(rsds):
+            if not snap_active[i]:
+                continue
+            restore_full()          # each drop warm-starts from the full solution
+            r.active = False
+            self.fit()              # refit global on the remaining residues
+            out[r.label] = self.kex if self.model == 'Meiboom' else self.kAB + self.kBA
+
+        restore_full()
+        self.verbose = snap_verbose
+        self._refresh_global_stats()   # restore full-active global-fit statistics
+        self._loo_cache = (active_labels, dict(out))
+        return dict(out)
+
+    def _per_residue_global_chi2(self):
+        """Per-residue chi2 contribution under the current global solution.
+
+        Evaluates each active residue in isolation at the shared global
+        exchange parameters (and that residue's global-fit dd / R2_0 values),
+        giving the residue's own contribution to the global chi2.  No refitting
+        is done; the global state is restored before returning.
+
+        Returns:
+            dict: {residue_label: (chi2, n_points)} for every active residue.
+        """
+        rsds = self.dataset.rsds
+        snap_active  = [r.active for r in rsds]
+        snap_verbose = self.verbose
+        self.verbose = False
+
+        out = {}
+        for i, r in enumerate(rsds):
+            if not snap_active[i]:
+                continue
+            for k, rr in enumerate(rsds):
+                rr.active = (k == i)
+            self._cache_arrays()
+            # _build_p0_current uses the (unchanged) global exchange rate and
+            # this residue's global-fit dd / R2_0, so errFunc returns exactly
+            # the residue's contribution to the global chi2.
+            p   = self._build_p0_current()
+            res = self.errFunc(p)
+            out[r.label] = (float(np.dot(res, res)), len(res))
+
+        for k, rr in enumerate(rsds):
+            rr.active = snap_active[k]
+        self.verbose = snap_verbose
+        self._cache_arrays()
+        return out
+
+    def jackknifeGlobal(self):
+        """Leave-one-residue-out jackknife of the shared global exchange rate.
+
+        Refits the global model with each active residue removed in turn and
+        tracks the shared exchange rate kex.  A stable kex across every
+        leave-one-out refit means no single residue drives the global fit
+        (robust global fit); a large swing when one residue is dropped flags
+        that residue as influential / an outlier.
+
+        Assumes fit() has already produced the full global solution.  The full
+        global solution is restored before returning.
+
+        Returns:
+            dict or None: None if fewer than 2 active residues (jackknife
+            undefined).  Otherwise a summary with keys:
+              * 'kex_full'      — kex from the full global fit
+              * 'kex_jack_mean' — mean of the leave-one-out kex values
+              * 'kex_jack_est'  — bias-corrected jackknife estimate
+              * 'bias'          — jackknife bias estimate
+              * 'se'            — jackknife standard error of kex
+              * 'n'             — number of active residues resampled
+              * 'per_residue'   — list of {label, kex_drop, delta_kex,
+                                  pseudo_value}
+        """
+        rsds = self.dataset.rsds
+        # Ordered active labels; leave-one-out kex comes from the shared helper
+        # (also used by compareModelsAIC, so the N refits happen only once).
+        active_labels = [r.label for r in rsds if r.active]
+        N = len(active_labels)
+        if N < 2:
+            return None
+
+        kex_full = self.kex if self.model == 'Meiboom' else self.kAB + self.kBA
+        loo   = self._leave_one_out_kex()               # {label: kex_without_residue}
+        drops = [(label, loo[label]) for label in active_labels]
+
+        # --- Jackknife statistics ---
+        kex_vals = [k for _, k in drops]
+        mean     = sum(kex_vals) / N
+        bias     = (N - 1) * (mean - kex_full)
+        # Pseudo-values: N*theta_full - (N-1)*theta_(-i)
+        pseudo   = [N * kex_full - (N - 1) * k for k in kex_vals]
+        jack_est = sum(pseudo) / N
+        se       = sqrt((N - 1) / N * sum((k - mean) ** 2 for k in kex_vals))
+
+        per_residue = []
+        for (label, kex_i), ps in zip(drops, pseudo):
+            per_residue.append({
+                'label':        label,
+                'kex_drop':     kex_i,
+                'delta_kex':    kex_full - kex_i,
+                'pseudo_value': ps,
+            })
+
+        return {
+            'kex_full':      kex_full,
+            'kex_jack_mean': mean,
+            'kex_jack_est':  jack_est,
+            'bias':          bias,
+            'se':            se,
+            'n':             N,
+            'per_residue':   per_residue,
+        }
+
+    def jackknifeReport(self, jk):
+        """Format the jackknife validation result as a text block.
+
+        Args:
+            jk (dict): the dict returned by jackknifeGlobal().
+
+        Returns:
+            str: multi-line report suitable for the log file / stdout.
+        """
+        buf  = '\n========\n'
+        buf += 'Jackknife validation of the global fit (leave-one-residue-out)\n'
+        buf += '========\n'
+        buf += 'active residues resampled:    %12d\n'   % jk['n']
+        buf += 'kex (full global fit):        %12.3f\n' % jk['kex_full']
+        buf += 'kex (jackknife mean):         %12.3f\n' % jk['kex_jack_mean']
+        buf += 'kex (bias-corrected):         %12.3f\n' % jk['kex_jack_est']
+        buf += 'jackknife bias:               %12.3f\n' % jk['bias']
+        buf += 'jackknife std error (kex):    %12.3f\n' % jk['se']
+        rel = jk['se'] / abs(jk['kex_full']) * 100.0 if jk['kex_full'] else float('nan')
+        buf += 'relative std error:           %11.2f%%\n' % rel
+        buf += '---\n'
+        buf += 'Per-residue influence (delta_kex = kex_full - kex_without_residue):\n'
+        buf += '%6s %14s %14s %10s\n' % ('resId', 'kex(-res)', 'delta_kex', '|z|')
+        for d in jk['per_residue']:
+            z = abs(d['delta_kex']) / jk['se'] if jk['se'] > 0 else float('nan')
+            flag = '  *' if (jk['se'] > 0 and abs(d['delta_kex']) > 2.0 * jk['se']) else ''
+            buf += '%6s %14.3f %14.3f %10.2f%s\n' % (
+                d['label'], d['kex_drop'], d['delta_kex'], z, flag)
+        buf += '---\n'
+        buf += '(* = influential: dropping this residue shifts kex by > 2 jackknife SE)\n'
+        buf += 'The global fit is robust when no residue is flagged and the '
+        buf += 'relative SE is small.\n'
+        buf += '========\n'
+        return buf
 
     def aicReport(self, cmp):
         """Format the AIC model-comparison result as a text block.
@@ -1062,7 +1350,7 @@ class CPMG_model:
         buf += 'delta AICc (individual - global): %12.3f\n' % cmp['delta_aicc']
         buf += 'Akaike weights (AICc): global=%.4f  individual=%.4f\n' % (
             cmp['weight_global'], cmp['weight_individual'])
-        buf += 'Preferred model: %s\n' % cmp['preferred']
+        buf += 'Preferred model (whole dataset): %s\n' % cmp['preferred']
         buf += '---\n'
         buf += 'Per-residue individual fit:\n'
         if self.model == 'Meiboom':
@@ -1076,6 +1364,25 @@ class CPMG_model:
             for d in cmp['per_residue']:
                 buf += '%6s %10.3f %8.4f %10.4f %10.3f\n' % (
                     d['label'], d['kex'], d['pB'], d['dd'], d['chi2'])
+
+        # Per-residue verdict: individual vs global for each residue
+        buf += '---\n'
+        buf += 'Per-residue preference (individual vs global fit):\n'
+        buf += '%6s %12s %12s %12s %12s %10s\n' % (
+            'resId', 'chi2_glob', 'chi2_indiv', 'dAICc', 'z(kex)', 'better')
+        for d in cmp['per_residue']:
+            z = d.get('z_kex', float('nan'))
+            buf += '%6s %12.3f %12.3f %12.3f %12.2f %10s\n' % (
+                d['label'], d['chi2_global'], d['chi2'],
+                d['delta_aicc'], z, d['preferred'])
+        buf += '---\n'
+        buf += ('dAICc = AICc(individual) - AICc(global): '
+                '> 0 favours global, < 0 favours individual.\n')
+        buf += ('z(kex) = (kex_individual - kex_leave_one_out) / sigma(kex_individual), '
+                'i.e. vs the kex fitted from the other residues (unbiased): '
+                '|z| > 2 means the residue disagrees with the shared kex.\n')
+        buf += 'Residues preferring global: %d   preferring individual: %d\n' % (
+            cmp['n_pref_global'], cmp['n_pref_individual'])
         buf += '========\n'
         return buf
 

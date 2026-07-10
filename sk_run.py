@@ -49,8 +49,28 @@ Copyright (c) 2025-2026 Prof. Dr. Donghan Lee, Korea Basic Science Institute (KB
 from sys import argv, stdout
 
 import json
+import math
 
 from cpmg.model_2state import CPMG_model
+
+
+def _finite_json(obj):
+    """Serialise to strict JSON, mapping inf/nan to null.
+
+    The analysis blocks can hold non-finite floats (AICc is +inf when a residue
+    is data-starved; z_kex is nan when the individual kex has no error estimate).
+    Python's json emits Infinity/NaN tokens that strict parsers (e.g. JS
+    JSON.parse) reject, so replace them with null for portability.
+    """
+    def clean(x):
+        if isinstance(x, float):
+            return x if math.isfinite(x) else None
+        if isinstance(x, dict):
+            return {k: clean(v) for k, v in x.items()}
+        if isinstance(x, list):
+            return [clean(v) for v in x]
+        return x
+    return json.dumps(clean(obj))
 
 
 def main():
@@ -177,11 +197,29 @@ def main():
     # Enabled with "compare_aic": true in the config.  Must run before toMeiboom()
     # so both models are compared in the same (csd) parameter domain.
     aicReportText = None
+    aicCmp        = None
     if conf.get('compare_aic', False):
         print('Comparing global vs individual fits (AIC)...')
         aicCmp        = m2.compareModelsAIC()
         aicReportText = m2.aicReport(aicCmp)
         print(aicReportText)
+
+    # -----------------------------------------------------------------------
+    # Optional: jackknife validation of the global fit
+    # -----------------------------------------------------------------------
+    # Enabled with "jackknife": true in the config.  Leave-one-residue-out
+    # refits check how strongly the shared global kex depends on any single
+    # residue.  Like compare_aic, it must run before toMeiboom().
+    jkReportText = None
+    jk           = None
+    if conf.get('jackknife', False):
+        print('Jackknife validation of the global fit (leave-one-residue-out)...')
+        jk = m2.jackknifeGlobal()
+        if jk is not None:
+            jkReportText = m2.jackknifeReport(jk)
+            print(jkReportText)
+        else:
+            print('Jackknife skipped: need at least 2 active residues.')
 
     # If fast exchange was fitted with Matrix or London, convert results to
     # the Meiboom phi representation for a more interpretable parameter set
@@ -197,6 +235,10 @@ def main():
     if aicReportText is not None:
         logBuf += aicReportText
 
+    # Append the jackknife validation block to the log when it was computed
+    if jkReportText is not None:
+        logBuf += jkReportText
+
     with open(projectName + '.log', 'w') as file1:
         print(logBuf)
         file1.write(logBuf)
@@ -206,6 +248,15 @@ def main():
     out = m2.reportAllValues()    # nested list of per-residue result dicts
 
     print('Calculations finished successfully.')
+
+    # Optional analysis blocks: labelled JSON, printed before the residues so
+    # the final line stays the residues list for backward-compatible parsing.
+    if aicCmp is not None:
+        print("##### model_comparison")
+        print(_finite_json(aicCmp))
+    if jk is not None:
+        print("##### jackknife")
+        print(_finite_json(jk))
 
     # JSON results are printed to stdout so they can be piped or captured
     print("#####")
