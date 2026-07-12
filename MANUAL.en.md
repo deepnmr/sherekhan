@@ -71,7 +71,7 @@ Key fields:
 
 | Field | Value | Meaning |
 |-------|-------|---------|
-| `exchange` | `"fast"` / `"slow"` / `"undefined"` | exchange regime; `"undefined"` (ambiguous or single-field data) is paired with model `Matrix` and auto-sets every residue to `flag: "off"` — turn residues on manually |
+| `exchange` | `"fast"` / `"slow"` / `"undefined"` | exchange regime, always paired with model `Matrix` when `"undefined"`. **Ambiguous** multi-field data (equal fast/slow tally) → every residue auto-set `flag: "off"` (turn the ones you want on manually). **Single-field** data → also `"undefined"`/`Matrix` but every residue is left `flag: "on"` (alpha needs field ≥ 2, so nothing is disabled) |
 | `model` | `"Meiboom"` / `"London"` / `"Matrix"` | fitting model (Matrix = exact, slow) |
 | `init.mode` | `"guess"` / `"values"` | initial values: grid search / explicit |
 | `residues[].flag` | `"on"` / `"off"` | include the residue or not |
