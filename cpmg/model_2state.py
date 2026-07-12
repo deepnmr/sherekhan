@@ -79,7 +79,7 @@ class CPMG_model:
         # Program identification banner shown in the log file
         self.programName = ('ShereKhan\n'
                             'CPMG program\n'
-                            'ver. 1.2.0\n'
+                            'ver. 1.2.1\n'
                             '\nProf. Dr. Donghan Lee\n'
                             'Korea Basic Science Institute (KBSI)\n'
                             '\nOriginal code: Adam Mazur, Bjoern Hammesfahr, '
