@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sherekhan"
-version = "1.2.0"
+version = "1.2.1"
 description = "ShereKhan — NMR CPMG relaxation-dispersion curve analysis (two-state exchange fitting)"
 readme = "README.md"
 requires-python = ">=3.8"

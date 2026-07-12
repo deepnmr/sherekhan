@@ -31,4 +31,4 @@ Max-Planck-Institute for Biophysical Chemistry, Goettingen, 2012
 Copyright (c) 2025-2026 Prof. Dr. Donghan Lee, Korea Basic Science Institute (KBSI)
 """
 
-__version__ = '1.2.0'
+__version__ = '1.2.1'
