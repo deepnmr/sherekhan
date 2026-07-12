@@ -67,7 +67,7 @@ sk-prepare f60.dat f90.dat > run.conf
 
 | 필드 | 값 | 의미 |
 |------|-----|------|
-| `exchange` | `"fast"` / `"slow"` / `"undefined"` | 교환 체제; `"undefined"`(애매하거나 단일 필드 데이터)는 모델 `Matrix`와 짝이 되고 모든 잔기를 자동으로 `flag: "off"`로 둠 — 수동으로 켜야 함 |
+| `exchange` | `"fast"` / `"slow"` / `"undefined"` | 교환 체제; `"undefined"`는 항상 모델 `Matrix`와 짝. **애매한** 다중 필드 데이터(fast/slow 개수 동률) → 모든 잔기를 자동으로 `flag: "off"`로 둠(원하는 잔기만 수동으로 켬). **단일 필드** 데이터 → 마찬가지로 `"undefined"`/`Matrix`지만 모든 잔기는 `flag: "on"`으로 남음(alpha는 필드 ≥ 2 필요, 그래서 아무것도 끄지 않음) |
 | `model` | `"Meiboom"` / `"London"` / `"Matrix"` | 피팅 모델 (Matrix=정확, 느림) |
 | `init.mode` | `"guess"` / `"values"` | 초기값: 그리드 탐색 / 직접 지정 |
 | `residues[].flag` | `"on"` / `"off"` | 잔기 포함 여부 |

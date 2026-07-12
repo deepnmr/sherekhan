@@ -122,7 +122,7 @@ python sk_run.py project.conf
 
 | 필드 | 값 | 설명 |
 |------|-----|------|
-| `exchange` | `"fast"` / `"slow"` | 교환 체제 |
+| `exchange` | `"fast"` / `"slow"` / `"undefined"` | 교환 체제. `"undefined"`는 항상 모델 `Matrix`와 짝. 애매한 다중 필드(fast/slow 동률) → 모든 잔기 자동 `flag: "off"`. 단일 필드 → 마찬가지 `"undefined"`/`Matrix`지만 모든 잔기 `flag: "on"` (alpha는 필드 ≥ 2 필요) |
 | `model` | `"Meiboom"` / `"Matrix"` / `"London"` | 피팅 모델 |
 | `init.mode` | `"guess"` / `"values"` | 초기값 설정 방식 |
 | `residues[].flag` | `"on"` / `"off"` | 해당 잔기 분석 포함 여부 |
