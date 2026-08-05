@@ -7,7 +7,7 @@ CPMG 완화 분산 데이터에서 **모든 잔기가 하나의 교환 과정(ke
 견고성을 검증하는 실전 절차.
 
 - 대상: `sk-prepare` → `sk-run` 파이프라인 사용자
-- 사전 지식: `README.md`(설치), `USAGE.md`(config/모델 상세)
+- 사전 지식: `README.md`(설치), `USAGE.md`(config/모델 상세, [English](USAGE.en.md))
 - 이 문서는 원시 `.dat`에서 판정·검증까지의 **순서**를 다룬다.
 
 ---

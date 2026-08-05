@@ -1,5 +1,7 @@
 # ShereKhan 1.2.1 레퍼런스
 
+> 🌐 **한국어** · [English](USAGE.en.md)
+
 NMR CPMG 분산 곡선 분석 도구 — 스크립트·config·데이터 형식 레퍼런스.  
 저자: Prof. Dr. Donghan Lee, Korea Basic Science Institute (KBSI)  
 원본 코드: Adam Mazur, Bjoern Hammesfahr, Christian Griesinger, Donghan Lee, Martin Kollmar (Max-Planck-Institute for Biophysical Chemistry, 2012)  
