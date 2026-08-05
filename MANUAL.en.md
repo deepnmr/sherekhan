@@ -8,7 +8,7 @@ its own kex (individual fit)**, and for validating the robustness of the global 
 with the **jackknife**.
 
 - Audience: users of the `sk-prepare` → `sk-run` pipeline
-- Prerequisites: `README.md` (install), `USAGE.md` (config/model details)
+- Prerequisites: `README.md` (install), `USAGE.en.md` (config/model details)
 - This document covers the **order of steps** from raw `.dat` to verdict and validation.
 
 ---
