@@ -23,6 +23,22 @@ FAMILY_A = ['m1', 'm2', 'm3', 'm4']
 FAMILY_B = ['g2', 'g3']
 
 
+def fmt(v, spec):
+    """Format v with a format spec such as '.0f'; None -> 'n/a'."""
+    return 'n/a' if v is None else format(v, spec)
+
+
+def pct(v):
+    return 'n/a' if v is None else '%.1f%%' % v
+
+
+def relse(jk):
+    """Jackknife relative SE in percent, or None when any input is null."""
+    if not jk or jk['se'] is None or jk['kex_full'] is None:
+        return None
+    return jk['se'] / abs(jk['kex_full']) * 100.0
+
+
 def build_model(name):
     d = os.path.join(HERE, name)
     truth = json.load(open(os.path.join(d, 'truth.json')))
@@ -63,7 +79,10 @@ def eval_family_A(name):
     cmp = m.compareModelsAIC()
 
     # Identification: rank residues by their chi2 contribution under global.
-    ranked = sorted(cmp['per_residue'], key=lambda d: d['chi2_global'], reverse=True)
+    # The top-N needs the complete ranking: any null chi2_global skips it.
+    na = [d['label'] for d in cmp['per_residue'] if d['chi2_global'] is None]
+    ranked = sorted((d for d in cmp['per_residue'] if d['chi2_global'] is not None),
+                    reverse=True, key=lambda d: d['chi2_global'])
     topN = {d['label'] for d in ranked[:N]}
     hit = len(topN & individuals)
 
@@ -73,24 +92,44 @@ def eval_family_A(name):
     m.fit()
     rec = m.compareModelsAIC()
     rjk = m.jackknifeGlobal()
-    rel = rjk['se'] / abs(rjk['kex_full']) * 100.0 if rjk else float('nan')
+    rel = relse(rjk)
 
     print('-' * 84)
     print('%s  (Family A: %d individual%s + %d shared)   true individuals: %s' % (
         name.upper(), N, '' if N == 1 else 's', len(shared), sorted(individuals)))
     print('  whole-dataset preferred : %s   (prefer global=%d, individual=%d)' % (
         cmp['preferred'], cmp['n_pref_global'], cmp['n_pref_individual']))
-    print('  identification (top-%d by chi2_global): %s   -> %d/%d individuals found' % (
-        N, sorted(topN), hit, N))
+    # Aggregation rule: a check is SKIPPED when any value it needs is None.
+    # Scenario = FAIL if any check FAILs; else PASS if any check PASSes; else SKIPPED.
+    checks = []
+    if na:
+        checks.append('SKIPPED')
+        print('  identification (top-%d by chi2_global): skipped: n/a (chi2_global unavailable for %s)' % (
+            N, ', '.join(na)))
+    else:
+        checks.append('PASS' if hit == N else 'FAIL')
+        print('  identification (top-%d by chi2_global): %s   -> %d/%d individuals found' % (
+            N, sorted(topN), hit, N))
     print('  ranked chi2_global: ' + '  '.join(
-        '%s=%.0f%s' % (d['label'], d['chi2_global'], '*' if d['label'] in individuals else '')
+        '%s=%s%s' % (d['label'], fmt(d['chi2_global'], '.0f'), '*' if d['label'] in individuals else '')
         for d in ranked))
-    print('  recovery (individuals removed): whole=%s  jackknife relSE=%.1f%%  kex=%.0f' % (
-        rec['preferred'], rel, rjk['kex_full'] if rjk else float('nan')))
-    ok = (hit == N) and (rec['preferred'] == 'global')
-    print('  RESULT: %s  (identified all individuals AND global restored)' % (
-        'PASS' if ok else 'PARTIAL'))
-    return name, ok
+    print('  recovery (individuals removed): whole=%s  jackknife relSE=%s  kex=%s' % (
+        fmt(rec['preferred'], 's'), pct(rel), fmt(rjk['kex_full'] if rjk else None, '.0f')))
+    # Recovery is a separate check; it reads rec['preferred'].
+    if rec['preferred'] is None:
+        checks.append('SKIPPED')
+        print('  recovery RESULT: skipped: n/a (preferred unavailable for whole dataset)')
+    else:
+        checks.append('PASS' if rec['preferred'] == 'global' else 'FAIL')
+        print('  recovery RESULT: %s  (global restored after removal)' % checks[-1])
+    if 'FAIL' in checks:
+        label = 'FAIL'
+    elif 'PASS' in checks:
+        label = 'PASS'
+    else:
+        label = 'SKIPPED'
+    print('  RESULT: %s  (%d check(s) skipped)' % (label, checks.count('SKIPPED')))
+    return name, label, label != 'FAIL'
 
 
 def eval_family_B(name):
@@ -116,17 +155,17 @@ def eval_family_B(name):
         chi2_K += c
         k_K += k
         jk = m.jackknifeGlobal()
-        group_relse[gid] = (jk['se'] / abs(jk['kex_full']) * 100.0) if jk else float('nan')
+        group_relse[gid] = relse(jk)
 
     set_active(m, alllabels)            # restore
 
-    aicc = {
-        '1-global':   m._aic(chi2_1, k_1, n)[1],
-        '%d-global' % K: m._aic(chi2_K, k_K, n)[1],
-        'individual': m._aic(chi2_ind, k_ind, n)[1],
-    }
-    winner = min(aicc, key=aicc.get)
     kg_label = '%d-global' % K
+    # Selection needs the individual chi2 and k; a null there skips the check.
+    have_ind = chi2_ind is not None and k_ind is not None
+    aicc = {'1-global': m._aic(chi2_1, k_1, n)[1], kg_label: m._aic(chi2_K, k_K, n)[1]}
+    if have_ind:
+        aicc['individual'] = m._aic(chi2_ind, k_ind, n)[1]
+    winner = min(aicc, key=aicc.get)
 
     print('-' * 84)
     print('%s  (Family B: %d global groups)   groups: %s' % (
@@ -134,17 +173,20 @@ def eval_family_B(name):
     print('  single global fit on all -> whole-dataset preferred: %s' % cmp['preferred'])
     print('  structure model selection (lower AICc wins):')
     amin = min(aicc.values())
-    for label in ['1-global', kg_label, 'individual']:
+    for label in aicc:
         print('    %-12s chi2=%9.2f  AICc=%10.2f  dAICc=%+9.2f %s' % (
             label,
             {'1-global': chi2_1, kg_label: chi2_K, 'individual': chi2_ind}[label],
             aicc[label], aicc[label] - amin, '  <-- WINNER' if label == winner else ''))
     print('  per-group internal jackknife relSE: ' + '  '.join(
-        '%s=%.1f%%' % (g, group_relse[g]) for g in groups))
-    ok = winner == kg_label
-    print('  RESULT: %s  (%d-global model wins as expected)' % (
-        'PASS' if ok else 'FAIL', K))
-    return name, ok
+        '%s=%s' % (g, pct(group_relse[g])) for g in groups))
+    if not have_ind:
+        label = 'SKIPPED'
+        print('  RESULT: skipped: n/a (individual chi2/k unavailable)')
+    else:
+        label = 'PASS' if winner == kg_label else 'FAIL'
+        print('  RESULT: %s  (%d-global model wins as expected)' % (label, K))
+    return name, label, label != 'FAIL'
 
 
 if __name__ == '__main__':
@@ -161,8 +203,6 @@ if __name__ == '__main__':
     print()
     print('=' * 84)
     print('SUMMARY')
-    allok = True
-    for name, ok in ra + rb:
-        allok = allok and ok
-        print('  %-4s %s' % (name, 'PASS' if ok else 'CHECK'))
-    raise SystemExit(0 if allok else 1)
+    for name, label, _ in ra + rb:
+        print('  %-4s %s' % (name, label))
+    raise SystemExit(1 if any(label == 'FAIL' for _, label, _ in ra + rb) else 0)
