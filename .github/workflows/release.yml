@@ -15,6 +15,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - run: python -m pip install -U pip
+      - run: pip install -e ".[test]"
+      - name: Unit tests
+        run: python -m pytest -q
+      - name: Integration tests
+        run: bash test/run_tests.sh
       - run: pip install build
       - name: Build wheel and sdist
         run: python -m build

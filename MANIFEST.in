@@ -5,4 +5,6 @@ include USAGE.en.md
 include MANUAL.en.md
 include MANUAL.ko.md
 include requirements.txt
-recursive-include test *.conf *.dat run_tests.sh
+include CHANGELOG.md
+recursive-include test *.py *.json *.conf *.dat run_tests.sh
+recursive-include demo *.py *.sh *.md
