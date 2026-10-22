@@ -1,4 +1,5 @@
 """Refactor guard: the CPMG_model facade keeps its names and delegates exactly to cpmg.models."""
+import math
 import os
 import subprocess
 import sys
@@ -86,7 +87,9 @@ def test_aic_and_derived_std_exact():
 
 
 def test_derived_std_bit_exact():
-    # float.hex values recorded at the pre-change commit c856545.
+    # Values recorded at commit c856545 (float.hex). Bit equality holds on one
+    # numpy/libm build; across builds the last ulps of sqrt/products differ, so
+    # compare at 4 ulp-scale relative tolerance (1e-14).
     cases = [
         (100., 900., 2., np.array([[100., -180., .3], [-180., 400., -.6], [.3, -.6, .01]]),
          ['0x1.7aa10d193c22dp+3', '0x1.630ba45343435p-7', '0x1.d3a039c29a407p-5']),
@@ -96,8 +99,9 @@ def test_derived_std_bit_exact():
          ['0x1.efbdeb14f4edap+2', '0x1.f1621dea44742p-9', '0x1.12eadac49beadp-5']),
     ]
     for kAB, kBA, dd, C, want in cases:
-        got = [float(x).hex() for x in _derived_std(kAB, kBA, dd, C)]
-        assert got == want, (got, want)
+        got = [float(x) for x in _derived_std(kAB, kBA, dd, C)]
+        exp = [float.fromhex(h) for h in want]
+        assert all(math.isclose(g, e, rel_tol=1e-14, abs_tol=0.0) for g, e in zip(got, exp)), (got, exp)
 
 
 def test_aic_report_takes_model_name():
