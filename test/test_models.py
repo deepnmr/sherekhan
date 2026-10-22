@@ -10,11 +10,13 @@ import re
 import sys
 import tempfile
 
+from math import sqrt
+
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cpmg import __version__
-from cpmg.model_2state import CPMG_model
+from cpmg.model_2state import CPMG_model, _derived_std
 
 
 def _write_dat(field, tcp, residues):
@@ -233,6 +235,30 @@ def test_meiboom_fast_limit_agrees_with_matrix():
     mat = m.R2_clc_matrix(pB * kex, (1 - pB) * kex, dw, r20, nu, .04)
     mei = m.R2_clc_meiboom(kex, pB * (1 - pB) * csd ** 2, r20, nu, field)
     assert abs(mat - mei) < 1e-5, (mat, mei)
+
+
+def test_derived_std_uses_full_covariance():
+    C = np.array([[100., -180., .3], [-180., 400., -.6], [.3, -.6, .01]])
+    kex_std, pB_std, phi_std = _derived_std(100., 900., 2., C)
+    assert abs(kex_std - 11.832159566199) < 1e-10, kex_std
+    assert abs(pB_std - 0.010835128056) < 1e-10, pB_std
+    assert abs(phi_std - 0.057083237470) < 1e-10, phi_std
+
+
+def test_derived_std_diagonal_matches_old_formulas():
+    kAB, kBA, dd = 100., 900., 2.
+    a, b, c = 4., 9., .01
+    C = np.diag([a, b, c])
+    k = kAB + kBA
+    p = kAB / k
+    kex_old = sqrt(a + b)
+    pB_old = sqrt(a * (1. / k - kAB / k ** 2) ** 2 + b * (kAB / k ** 2) ** 2)
+    phi_old = sqrt((sqrt(c) * 2. * p * (1. - p) * dd) ** 2
+                   + (pB_old * (1. - 2. * p) * dd ** 2) ** 2)
+    kex_std, pB_std, phi_std = _derived_std(kAB, kBA, dd, C)
+    assert abs(kex_std - kex_old) < 1e-12
+    assert abs(pB_std - pB_old) < 1e-12
+    assert abs(phi_std - phi_old) < 1e-12
 
 
 if __name__ == '__main__':

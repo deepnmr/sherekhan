@@ -36,6 +36,7 @@ from matplotlib import use
 use('Agg')  # non-interactive backend — must be set before importing pyplot
 
 import platform
+import sys
 import numpy as np
 from numpy import array, sqrt, pi, dot, real, log, sin, sinh, cos, cosh, exp, zeros, sort, tanh, isfinite
 from scipy.optimize import leastsq
@@ -75,6 +76,39 @@ def _london_cr72(kAB, kBA, domega, R2_0, nu):
     B = dot(dot(expm(A * d), expm(A.conj() * 2.0 * d)), expm(A * d))
     rho = max(abs(np.linalg.eigvals(B)))
     return R2_0 - nu * log(rho)
+
+
+def _derived_std(kAB, kBA, dd, C3):
+    """Propagate the fitted covariance to kex, pB and phi = pB*(1-pB)*dd^2.
+
+    Args:
+        kAB, kBA (float): Fitted exchange rates.
+        dd       (float): Fitted chemical shift difference of the residue.
+        C3       (3x3 array): Covariance of (kAB, kBA, dd).
+
+    Returns:
+        tuple: (kex_std, pB_std, phi_std), each clamped to >= 0 before the root.
+    """
+    C3 = np.asarray(C3, dtype=float)
+    C2 = C3[:2, :2]
+    k = kAB + kBA
+    p = kAB / k
+    g_kex = np.array([1.0, 1.0])
+    g_pB = np.array([kBA / k ** 2, -kAB / k ** 2])
+    g_phi = np.array([dd ** 2 * (1.0 - 2.0 * p) * g_pB[0],
+                      dd ** 2 * (1.0 - 2.0 * p) * g_pB[1],
+                      2.0 * p * (1.0 - p) * dd])
+    kex_var = np.dot(g_kex, np.dot(C2, g_kex))
+    pB_var = np.dot(g_pB, np.dot(C2, g_pB))
+    phi_var = np.dot(g_phi, np.dot(C3, g_phi))
+    return sqrt(max(kex_var, 0.0)), sqrt(max(pB_var, 0.0)), sqrt(max(phi_var, 0.0))
+
+
+def _warn_if_not_converged(out):
+    """Print a stderr warning when leastsq did not report convergence."""
+    if out[4] not in (1, 2, 3, 4):
+        print('Warning: optimizer did not converge (ier=%d): %s' % (out[4], out[3]),
+              file=sys.stderr)
 
 
 class CPMG_model:
@@ -123,6 +157,7 @@ class CPMG_model:
         self.kBA_std = 0.0  # standard deviation of kBA
         self.kex = 0.0      # total exchange rate kAB + kBA (Meiboom model)
         self.kex_std = 0.0  # standard deviation of kex
+        self.covar = None   # covariance matrix of the last global fit
 
         self.dataset = CPMGDataSet()  # container for all experimental data
 
@@ -199,6 +234,7 @@ class CPMG_model:
         for i in range(0, len(self.dataset.rsds)):
             if self.dataset.rsds[i].active:
                 self.dataset.rsds[i].dd = p[j]
+                self.dataset.rsds[i]._dd_idx = j
                 if covar is not None:
                     self.dataset.rsds[i].dd_std = sqrt(covar[j][j])
                 j += 1
@@ -913,6 +949,8 @@ class CPMG_model:
 
         p1    = out[0]  # solution vector
         covar = out[1]  # covariance matrix (None when fit is singular)
+        self.covar = covar
+        _warn_if_not_converged(out)
 
         if covar is None:
             print('Warning: covariance matrix is None (fit may be singular). '
@@ -995,6 +1033,7 @@ class CPMG_model:
             out   = leastsq(self.errFunc, x0=p0, full_output=1)
             p1    = out[0]
             covar = out[1]                     # None when the fit is singular
+            _warn_if_not_converged(out)
             fvec  = out[2]['fvec']             # residuals at the solution
             chi2  = float(np.dot(fvec, fvec))
             npar  = len(p1)
@@ -1541,6 +1580,10 @@ class CPMG_model:
     def _kex_pB(self):
         """Derive (kex, kex_std, pB, pB_std) from kAB/kBA and their stds."""
         kex     = self.kAB + self.kBA
+        if self.covar is not None:
+            # dd entries do not enter kex or pB; dd=0 only zeroes the phi part
+            kex_std, pB_std, _ = _derived_std(self.kAB, self.kBA, 0.0, self.covar[:3, :3])
+            return kex, kex_std, self.kAB / kex, pB_std
         kex_std = sqrt(self.kAB_std ** 2 + self.kBA_std ** 2)
         pB      = self.kAB / kex
         pB_std  = sqrt(self.kAB_std ** 2 * (1.0 / kex - self.kAB / kex ** 2) ** 2
@@ -1761,10 +1804,15 @@ class CPMG_model:
                 # Replace dd with phi = pB*(1-pB)*dd^2
                 r.dd = pB * (1.0 - pB) * dd_orig ** 2
                 # Propagate uncertainty through phi = pB*(1-pB)*dd^2
-                r.dd_std = sqrt(
-                    (dd_std_orig * 2.0 * pB * (1.0 - pB) * dd_orig) ** 2
-                    + (pB_std * (1.0 - 2.0 * pB) * dd_orig ** 2) ** 2
-                )
+                if self.covar is not None:
+                    idx = [0, 1, r._dd_idx]
+                    _, _, r.dd_std = _derived_std(self.kAB, self.kBA, dd_orig,
+                                                  self.covar[np.ix_(idx, idx)])
+                else:
+                    r.dd_std = sqrt(
+                        (dd_std_orig * 2.0 * pB * (1.0 - pB) * dd_orig) ** 2
+                        + (pB_std * (1.0 - 2.0 * pB) * dd_orig ** 2) ** 2
+                    )
 
     # -------------------------------------------------------------------------
     # JSON result export
