@@ -35,21 +35,35 @@ Copyright (c) 2025-2026 Prof. Dr. Donghan Lee, Korea Basic Science Institute (KB
 from matplotlib import use
 use('Agg')  # non-interactive backend — must be set before importing pyplot
 
-from sys import argv
+import platform
 import numpy as np
-from numpy import array, sqrt, pi, dot, real, log, sin, sinh, cos, cosh, matrix, exp, zeros, sort, tanh
+from numpy import array, sqrt, pi, dot, real, log, sin, sinh, cos, cosh, exp, zeros, sort, tanh
 from scipy.optimize import leastsq
 from matplotlib.pyplot import plot, errorbar, figure, title, legend, xlabel, ylabel, grid, xlim, ylim, close, \
     subplot
 from matplotlib.backends.backend_pdf import PdfPages
 
+from . import __version__
 from .cpmg import CPMGDataSet
 from scipy.linalg import expm          # matrix exponential
 from numpy.linalg import matrix_power  # integer matrix power
 from numpy import diag
-from os import uname
 from getpass import getuser
 from time import ctime
+
+
+def _echo_count(tcp, vCPMG):
+    """Return the integer number of CPMG echo repeats n = tcp * vCPMG.
+
+    Raises:
+        ValueError: when tcp * vCPMG is not a positive integer within 1e-3.
+    """
+    fn = tcp * vCPMG
+    n = int(round(fn))
+    if abs(fn - n) > 1e-3 or n < 1:
+        raise ValueError('tcp*nu_cpmg = %g is not a positive integer number of CPMG '
+                         'cycles (tcp=%g s, nu=%g Hz)' % (fn, tcp, vCPMG))
+    return n
 
 
 class CPMG_model:
@@ -79,14 +93,17 @@ class CPMG_model:
         # Program identification banner shown in the log file
         self.programName = ('ShereKhan\n'
                             'CPMG program\n'
-                            'ver. 1.2.1\n'
+                            'ver. ' + __version__ + '\n'
                             '\nProf. Dr. Donghan Lee\n'
                             'Korea Basic Science Institute (KBSI)\n'
                             '\nOriginal code: Adam Mazur, Bjoern Hammesfahr, '
                             'Christian Griesinger, Donghan Lee, Martin Kollmar\n'
                             'Max-Planck-Institute for Biophysical Chemistry, '
                             'Goettingen, 2012\n'
-                            '\n\nPlease cite: xxx\n')
+                            '\n\nPlease cite: Mazur A, Hammesfahr B, Griesinger C, Lee D, Kollmar M. '
+                            'ShereKhan - calculating exchange parameters in relaxation dispersion '
+                            'data from CPMG experiments. Bioinformatics 29(14):1819-1820 (2013). '
+                            'doi:10.1093/bioinformatics/btt286\n')
 
         # Global exchange-rate parameters shared across all residues
         self.kAB = 0.0      # A→B rate constant (s^-1)
@@ -208,12 +225,7 @@ class CPMG_model:
             float: Calculated effective R2 relaxation rate (s^-1).
         """
         delta = 1.0 / (4.0 * vCPMG)   # time for one quarter-echo interval
-        fn = tcp * vCPMG               # number of CPMG repeats (should be integer)
-
-        n = int(fn)
-        if fn - float(n) > 0.001:
-            print('Error: n is not an integer')
-            exit()
+        n = _echo_count(tcp, vCPMG)    # number of CPMG repeats (integer)
 
         # Build the Liouvillian matrix A for state A (real) and state B (complex)
         Alist = [[-R2_0 - kAB, kBA],
@@ -232,12 +244,12 @@ class CPMG_model:
 
         # Equilibrium populations
         pB = kAB / (kAB + kBA)
-        M0 = matrix([1.0 - pB, pB]).T  # initial magnetisation vector
+        M0 = array([1.0 - pB, pB])  # initial magnetisation vector
 
         MT = dot(C, M0)  # magnetisation after the full CPMG sequence
 
         # Recover R2eff from the decay of the ground-state magnetisation
-        R2_clc = (-1.0 / (4.0 * n * delta)) * log(MT[0, 0] / M0[0, 0])
+        R2_clc = (-1.0 / (4.0 * n * delta)) * log(MT[0] / M0[0])
 
         return real(R2_clc)
 
@@ -261,12 +273,7 @@ class CPMG_model:
             float: Calculated effective R2 relaxation rate (s^-1).
         """
         delta = 1.0 / (4.0 * vCPMG)
-        fn = tcp * vCPMG
-
-        n = int(fn)
-        if fn - float(n) > 0.001:
-            print('Error: n is not an integer')
-            exit()
+        n = _echo_count(tcp, vCPMG)
 
         # Analytic square-root factor appearing in both eigenvalues
         AA = sqrt(kBA ** 2 + (2.0 * kAB - 2.0 * 1.0j * domega) * kBA
@@ -303,10 +310,10 @@ class CPMG_model:
         C = matrix_power(B, n)
 
         pB = kAB / (kAB + kBA)
-        M0 = matrix([1.0 - pB, pB]).T
+        M0 = array([1.0 - pB, pB])
         MT = dot(C, M0)
 
-        R2_clc = (-1.0 / (4.0 * n * delta)) * log(MT[0, 0] / M0[0, 0])
+        R2_clc = (-1.0 / (4.0 * n * delta)) * log(MT[0] / M0[0])
 
         return real(R2_clc)
 
@@ -436,10 +443,7 @@ class CPMG_model:
                 # Group curves sharing an identical (tcp, frequency grid)
                 key = (dsp.tcp, v_arr.tobytes())
                 if key not in groups:
-                    fn_arr = dsp.tcp * v_arr
-                    n_arr  = np.round(fn_arr).astype(int)
-                    if np.any(np.abs(fn_arr - n_arr) > 0.001):
-                        raise ValueError('n is not an integer for some vCPMG values')
+                    n_arr  = np.array([_echo_count(dsp.tcp, v) for v in v_arr], dtype=int)
                     groups[key] = {
                         'members':   [],
                         'fields':    [],
@@ -723,8 +727,8 @@ class CPMG_model:
             kex = p[0]
             j = 1
         else:
-            print('Error: wrong model')
-            exit()
+            raise ValueError('Error: wrong model %r (expected Matrix, London or Meiboom)'
+                             % self.model)
 
         nres = len(self.dataset.rsds)  # total number of residues
         dd   = []   # per-residue csd or phi values (length nres)
@@ -1278,6 +1282,7 @@ class CPMG_model:
                 'kex_drop':     kex_i,
                 'delta_kex':    kex_full - kex_i,
                 'pseudo_value': ps,
+                'influential':  bool(se > 0 and abs(kex_full - kex_i) > 2.0 * se),
             })
 
         return {
@@ -1502,18 +1507,19 @@ class CPMG_model:
         # Run metadata: user, hostname, and current time
         buf += '********\n'
         user     = getuser()  # getlogin() needs a tty; getuser() reads env, works headless
-        hostname = uname()[1]
+        hostname = platform.node()
         buf += 'User: %s@%s\n' % (user, hostname)
         buf += '%s\n' % ctime()
         buf += '********\n\n'
 
         # Echo the input config file for full reproducibility
         buf += '********\n\n'
-        buf += 'Input file:\n'
         if config_path is None:
-            config_path = argv[1]  # fallback to the CLI arg when not supplied
-        with open(config_path, 'r') as file1:
-            buf += file1.read()
+            buf += 'Input file: (not provided)\n'
+        else:
+            buf += 'Input file:\n'
+            with open(config_path, 'r') as file1:
+                buf += file1.read()
         buf += '********\n\n'
 
         # Dataset summary: for each field, list experimental and calculated R2
@@ -1553,7 +1559,7 @@ class CPMG_model:
         buf += '---\n'
 
         # Per-exchange-regime parameter summary
-        if self.dataset.exchange == 'slow':
+        if self.dataset.exchange in ('slow', 'undefined'):
             # Derive kex and pB from the individual rate constants
             kex, kex_std, pB, pB_std = self._kex_pB()
 
@@ -1734,7 +1740,7 @@ class CPMG_model:
                 R2_0 = r.R2_0[i]
                 ty   = self._calc_r2(r, dspCurve, R2_0, tx)  # calculated R2
 
-                if self.dataset.exchange == 'slow':
+                if self.dataset.exchange in ('slow', 'undefined'):
                     kAB        = self.kAB
                     kBA        = self.kBA
                     kex        = kAB + kBA
@@ -1748,7 +1754,7 @@ class CPMG_model:
                     phi_std = r.dd_std
 
                 # Append the per-field result dictionary
-                if self.dataset.exchange == 'slow':
+                if self.dataset.exchange in ('slow', 'undefined'):
                     all_data[-1].append({
                         'tx':                 list(tx),
                         'r2_clc':             list(ty),
