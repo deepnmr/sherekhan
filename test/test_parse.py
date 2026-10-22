@@ -114,12 +114,12 @@ def test_label_forms_and_crlf():
 
 
 def test_label_without_data_is_dropped():
-    path = _write(HEADER + '# A1\n# B2\n50 22 0.4\n')
+    path = _write(HEADER + '# A1\n50 22 0.4\n# B2\n# C3\n51 21 0.4\n')
     try:
         ds = CPMGDataSet()
         ds.addField(path)
-        curves = {r.label: len(r.dspCurves) for r in ds.rsds}
-        assert curves == {'A1': 0, 'B2': 1}, curves
+        assert [r.label for r in ds.rsds] == ['A1', 'C3']
+        assert all(len(r.dspCurves) == 1 for r in ds.rsds)
     finally:
         os.remove(path)
 

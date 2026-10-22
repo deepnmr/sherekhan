@@ -226,6 +226,8 @@ class CPMGDataSet:
         # (can happen when a residue label appears but has no following data)
         for r in self.rsds:
             r.dspCurves = [dc for dc in r.dspCurves if len(dc.v) > 0]
+        # Then drop residues left without any curve (label-only residues)
+        self.rsds = [r for r in self.rsds if r.dspCurves]
 
     # -------------------------------------------------------------------------
     # Model selection helpers
