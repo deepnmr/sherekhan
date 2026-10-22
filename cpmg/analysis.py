@@ -318,6 +318,8 @@ def leave_one_out_kex(m):
                     list(r.R2_0), list(r.R2_0_std)) for r in rsds]
     snap_glob   = (m.kAB, m.kBA, m.kex)
     snap_std    = (m.kAB_std, m.kBA_std, m.kex_std)
+    snap_covar  = m.covar
+    snap_idx    = [getattr(r, '_dd_idx', None) for r in rsds]
     snap_verbose = m.verbose
 
     def restore_full():
@@ -328,8 +330,10 @@ def leave_one_out_kex(m):
             r.dd_std = dd_std
             r.R2_0 = list(r2_0)
             r.R2_0_std = list(r2_0_std)
+            r._dd_idx = snap_idx[k]
         m.kAB, m.kBA, m.kex = snap_glob
         m.kAB_std, m.kBA_std, m.kex_std = snap_std
+        m.covar = snap_covar
 
     m.verbose = False   # keep the N refits quiet
     out = {}
@@ -451,18 +455,27 @@ def jackknife_global(m):
     }
 
 
-def kex_pB(m):
-    """Derive (kex, kex_std, pB, pB_std) from kAB/kBA and their stds."""
-    kex     = m.kAB + m.kBA
-    if m.covar is not None:
+def kex_pB_values(kAB, kBA, kAB_std, kBA_std, covar):
+    """Derive (kex, kex_std, pB, pB_std) from kAB/kBA, their stds and covariance.
+
+    With a covariance matrix (3x3 over kAB, kBA, dd) the full propagation is
+    used; otherwise the diagonal-only formulas apply.
+    """
+    kex     = kAB + kBA
+    if covar is not None:
         # dd entries do not enter kex or pB; dd=0 only zeroes the phi part
-        kex_std, pB_std, _ = derived_std(m.kAB, m.kBA, 0.0, m.covar[:3, :3])
-        return kex, kex_std, m.kAB / kex, pB_std
-    kex_std = sqrt(m.kAB_std ** 2 + m.kBA_std ** 2)
-    pB      = m.kAB / kex
-    pB_std  = sqrt(m.kAB_std ** 2 * (1.0 / kex - m.kAB / kex ** 2) ** 2
-                   + m.kBA_std ** 2 * (m.kAB / kex ** 2) ** 2)
+        kex_std, pB_std, _ = derived_std(kAB, kBA, 0.0, covar[:3, :3])
+        return kex, kex_std, kAB / kex, pB_std
+    kex_std = sqrt(kAB_std ** 2 + kBA_std ** 2)
+    pB      = kAB / kex
+    pB_std  = sqrt(kAB_std ** 2 * (1.0 / kex - kAB / kex ** 2) ** 2
+                   + kBA_std ** 2 * (kAB / kex ** 2) ** 2)
     return kex, kex_std, pB, pB_std
+
+
+def kex_pB(m):
+    """Derive (kex, kex_std, pB, pB_std) from the state of m."""
+    return kex_pB_values(m.kAB, m.kBA, m.kAB_std, m.kBA_std, m.covar)
 
 
 def to_meiboom(m):

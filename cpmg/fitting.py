@@ -21,7 +21,8 @@ from .models import _echo_count
 def _warn_if_not_converged(out):
     """Print a stderr warning when leastsq did not report convergence."""
     if out[4] not in (1, 2, 3, 4):
-        print('Warning: optimizer did not converge (ier=%d): %s' % (out[4], out[3]),
+        msg = ' '.join(str(out[3]).split())
+        print('Warning: optimizer did not converge (ier=%d): %s' % (out[4], msg),
               file=sys.stderr)
 
 

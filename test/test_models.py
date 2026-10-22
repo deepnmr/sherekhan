@@ -17,6 +17,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cpmg import __version__
 from cpmg.model_2state import CPMG_model, _derived_std
+from cpmg.analysis import kex_pB_values
+from cpmg.fitting import _warn_if_not_converged
 
 
 def _write_dat(field, tcp, residues):
@@ -259,6 +261,71 @@ def test_derived_std_diagonal_matches_old_formulas():
     assert abs(kex_std - kex_old) < 1e-12
     assert abs(pB_std - pB_old) < 1e-12
     assert abs(phi_std - phi_old) < 1e-12
+
+
+def _fitted_slow_matrix_model():
+    m = CPMG_model()
+    m.verbose = False
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'slow', 'in')
+    m.dataset.addField(os.path.join(base, 'slow-synth-60.dat'))
+    m.dataset.addField(os.path.join(base, 'slow-synth-90.dat'))
+    m.dataset.exchange = 'slow'
+    m.model = 'Matrix'
+    m.initGuessAll()
+    m.init_R2_0()
+    m.fit()
+    return m
+
+
+def test_sub_fits_restore_covariance_state():
+    m = _fitted_slow_matrix_model()
+    kex_before = m._kex_pB()
+    covar_before = None if m.covar is None else np.array(m.covar, copy=True)
+    idx_before = [getattr(r, '_dd_idx', None) for r in m.dataset.rsds]
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        m.compareModelsAIC()
+        m.jackknifeGlobal()
+
+    assert m._kex_pB() == kex_before, (m._kex_pB(), kex_before)
+    if covar_before is None:
+        assert m.covar is None
+    else:
+        assert np.array_equal(m.covar, covar_before)
+    assert [getattr(r, '_dd_idx', None) for r in m.dataset.rsds] == idx_before
+
+
+def test_kex_pB_values_matches_formulas():
+    kAB, kBA, kAB_std, kBA_std = 100., 900., 3., 4.
+    kex, kex_std, pB, pB_std = kex_pB_values(kAB, kBA, kAB_std, kBA_std, None)
+    k = kAB + kBA
+    assert kex == k and pB == kAB / k
+    assert kex_std == sqrt(kAB_std ** 2 + kBA_std ** 2)
+    assert pB_std == sqrt(kAB_std ** 2 * (1. / k - kAB / k ** 2) ** 2
+                          + kBA_std ** 2 * (kAB / k ** 2) ** 2)
+    C = np.array([[100., -180., .3], [-180., 400., -.6], [.3, -.6, .01]])
+    kex_c, kex_std_c, pB_c, pB_std_c = kex_pB_values(kAB, kBA, 0., 0., C)
+    assert kex_c == k and pB_c == pB
+    ref = _derived_std(kAB, kBA, 0., C)
+    assert (kex_std_c, pB_std_c) == (ref[0], ref[1])
+
+
+def test_warn_if_not_converged_one_line_on_failure():
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        _warn_if_not_converged((None, None, {}, 'too\nmany\n  calls', 5))
+    lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+    assert len(lines) == 1, lines
+    assert lines[0].startswith('Warning: optimizer did not converge (ier=5)')
+    assert 'too many calls' in lines[0]
+
+
+def test_warn_if_not_converged_silent_on_success():
+    for ier in (1, 2, 3, 4):
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            _warn_if_not_converged((None, None, {}, 'ok', ier))
+        assert buf.getvalue() == '', buf.getvalue()
 
 
 if __name__ == '__main__':
