@@ -41,6 +41,8 @@ from . import __version__
 from . import report
 from .cpmg import CPMGDataSet
 from . import models
+from . import fitting
+from .fitting import _warn_if_not_converged
 from .models import _echo_count
 from scipy.linalg import expm          # matrix exponential
 from numpy.linalg import matrix_power  # integer matrix power
@@ -71,13 +73,6 @@ def _derived_std(kAB, kBA, dd, C3):
     pB_var = np.dot(g_pB, np.dot(C2, g_pB))
     phi_var = np.dot(g_phi, np.dot(C3, g_phi))
     return sqrt(max(kex_var, 0.0)), sqrt(max(pB_var, 0.0)), sqrt(max(phi_var, 0.0))
-
-
-def _warn_if_not_converged(out):
-    """Print a stderr warning when leastsq did not report convergence."""
-    if out[4] not in (1, 2, 3, 4):
-        print('Warning: optimizer did not converge (ier=%d): %s' % (out[4], out[3]),
-              file=sys.stderr)
 
 
 class CPMG_model:
@@ -138,80 +133,20 @@ class CPMG_model:
     # -------------------------------------------------------------------------
 
     def init_dd(self, dd_AB):
-        """Set the chemical shift difference (or phi) for all residues.
-
-        Args:
-            dd_AB (float): Chemical shift difference in ppm (Matrix/London)
-                           or phi = pB*(1-pB)*dd^2 (Meiboom).
-        """
-        for r in self.dataset.rsds:
-            r.dd = dd_AB
-            r.dd_std = 0.0
+        return fitting.init_dd(self, dd_AB)
 
     def init_R2_0(self):
-        """Initialise R2_0 for every residue from the last (highest nu) data point.
-
-        The last CPMG frequency typically gives the smallest Rex contribution,
-        so R2exp at that point is a good proxy for the intrinsic R2_0.
-        """
-        for r in self.dataset.rsds:
-            # highest nu_CPMG (last point) → smallest Rex → best R2_0 proxy
-            r.R2_0 = [dsp.R2exp[-1] for dsp in r.dspCurves]
-            r.R2_0_std = [0.0] * len(r.dspCurves)
+        return fitting.init_R2_0(self)
 
     # -------------------------------------------------------------------------
     # Parameter vector packing / unpacking
     # -------------------------------------------------------------------------
 
     def getLocalParams(self, p):
-        """Append per-residue parameters (dd, R2_0 values) to parameter list p.
-
-        The parameter vector layout for active residues is::
-
-            [global params, dd_r0, R2_0_r0_f0, R2_0_r0_f1, ...,
-                            dd_r1, R2_0_r1_f0, ...]
-
-        Only active residues contribute to the parameter vector.
-
-        Args:
-            p (list): Parameter list that is extended in place.
-        """
-        for r in self.dataset.rsds:
-            if r.active:
-                p.append(r.dd)
-                for r2_0 in r.R2_0:
-                    p.append(r2_0)
+        return fitting.get_local_params(self, p)
 
     def setLocalParams(self, p, covar=None):
-        """Unpack optimised per-residue parameters from the solution vector.
-
-        Updates each active residue's dd and R2_0 attributes.  If a covariance
-        matrix is available, standard deviations are also computed.
-
-        Args:
-            p     (array-like): Optimised parameter vector from leastsq.
-            covar (2-D array or None): Covariance matrix; None when the fit
-                                       is singular or poorly constrained.
-        """
-        # Number of global parameters preceding the local ones
-        if self.model in ('Matrix', 'London'):
-            nGlob = 2   # kAB, kBA
-        elif self.model == 'Meiboom':
-            nGlob = 1   # kex
-
-        j = nGlob  # index into the full parameter vector
-        for i in range(0, len(self.dataset.rsds)):
-            if self.dataset.rsds[i].active:
-                self.dataset.rsds[i].dd = p[j]
-                self.dataset.rsds[i]._dd_idx = j
-                if covar is not None:
-                    self.dataset.rsds[i].dd_std = sqrt(covar[j][j])
-                j += 1
-                for ii in range(len(self.dataset.rsds[i].R2_0)):
-                    self.dataset.rsds[i].R2_0[ii] = p[j]
-                    if covar is not None:
-                        self.dataset.rsds[i].R2_0_std[ii] = sqrt(covar[j][j])
-                    j += 1
+        return fitting.set_local_params(self, p, covar)
 
     # -------------------------------------------------------------------------
     # R2 calculation models
@@ -230,94 +165,10 @@ class CPMG_model:
         return models.r2_meiboom(kex, phi, R2_0, vCPMG, field)
 
     def _cache_arrays(self):
-        """Pre-cache numpy arrays and a batch plan for all dispersion curves.
-
-        Converts list-based v, R2exp, R2stddev attributes to contiguous numpy
-        arrays stored as v_arr, R2exp_arr, R2stddev_arr on each DispersionCurve.
-
-        Also builds the errFunc "batch plan": active dispersion curves that
-        share the same CPMG frequency grid and tcp are grouped so that all
-        residues in a group can be evaluated in a single vectorised call.
-        Per-group frequency-only invariants (delta, integer echo count n, and
-        stacked R2exp / R2stddev) are precomputed here so they are not
-        recomputed on every errFunc evaluation.
-
-        Called once before fitting or grid-search begins.
-        """
-        for res in self.dataset.rsds:
-            for dsp in res.dspCurves:
-                dsp.v_arr        = np.asarray(dsp.v,       dtype=float)
-                dsp.R2exp_arr    = np.asarray(dsp.R2exp,   dtype=float)
-                dsp.R2stddev_arr = np.asarray(dsp.R2stddev, dtype=float)
-
-        self._build_batch_plan()
+        return fitting.cache_arrays(self)
 
     def _build_batch_plan(self):
-        """Group active dispersion curves for vectorised errFunc evaluation.
-
-        Builds ``self._batch_groups``: a list of groups, one per distinct
-        (tcp, CPMG-frequency-grid) combination among the active residues.
-        Each group is a dict holding
-
-            * ``members``   : list of (residue_position, R2_0 field-index)
-                              locating where each curve's parameters live in
-                              the flat parameter vector unpacked by errFunc.
-            * ``fields``    : per-member static field strength (MHz).
-            * ``v_arr``     : shared CPMG frequency grid (Hz).
-            * ``delta_arr`` : 1/(4 v)         — echo quarter-interval, shape (V,).
-            * ``n_arr``     : round(tcp v)     — integer echo counts, shape (V,).
-            * ``tcp``       : shared pulse delay (s).
-            * ``R2exp``     : stacked experimental R2, shape (C, V).
-            * ``R2stddev``  : stacked experimental sigma, shape (C, V).
-            * ``slices``    : per-member (start, stop) offsets into the flat
-                              residual vector, preserving errFunc ordering.
-
-        The residual layout matches the original residue-major / field-order
-        loop exactly, so the residual vector handed to leastsq is unchanged.
-        """
-        groups = {}          # key -> group dict
-        order  = []          # group keys in first-seen order
-        idx    = 0           # running offset into the residual vector
-
-        for i_res, res in enumerate(self.dataset.rsds):
-            if not res.active:
-                continue
-            for j, dsp in enumerate(res.dspCurves):
-                v_arr = dsp.v_arr
-                n     = len(v_arr)
-                # Group curves sharing an identical (tcp, frequency grid)
-                key = (dsp.tcp, v_arr.tobytes())
-                if key not in groups:
-                    n_arr  = np.array([_echo_count(dsp.tcp, v) for v in v_arr], dtype=int)
-                    groups[key] = {
-                        'members':   [],
-                        'fields':    [],
-                        'v_arr':     v_arr,
-                        'delta_arr': 1.0 / (4.0 * v_arr),
-                        'n_arr':     n_arr,
-                        'tcp':       dsp.tcp,
-                        'R2exp':     [],
-                        'R2stddev':  [],
-                        'slices':    [],
-                    }
-                    order.append(key)
-                g = groups[key]
-                g['members'].append((i_res, j))
-                g['fields'].append(dsp.field)
-                g['R2exp'].append(dsp.R2exp_arr)
-                g['R2stddev'].append(dsp.R2stddev_arr)
-                g['slices'].append((idx, idx + n))
-                idx += n
-
-        # Finalise: convert per-group lists to stacked arrays
-        self._batch_groups = []
-        for key in order:
-            g = groups[key]
-            g['fields']   = np.asarray(g['fields'], dtype=float)
-            g['R2exp']    = np.vstack(g['R2exp'])
-            g['R2stddev'] = np.vstack(g['R2stddev'])
-            self._batch_groups.append(g)
-        self._n_residuals = idx
+        return fitting.build_batch_plan(self)
 
     # -------------------------------------------------------------------------
     # Vectorised R2 calculation models (accept v_array, return array)
@@ -341,210 +192,21 @@ class CPMG_model:
     # -------------------------------------------------------------------------
 
     def errFunc(self, p):
-        """Compute weighted residuals for all active residues and fields.
-
-        This function is passed directly to scipy.optimize.leastsq and must
-        return a 1-D array of residuals.  Each residual is::
-
-            (R2exp - R2calc) / R2stddev
-
-        Accumulates chi² and degrees-of-freedom for progress reporting.
-
-        Args:
-            p (array-like): Current parameter vector (global + local params).
-
-        Returns:
-            np.ndarray: 1-D array of weighted residuals.
-        """
-        # Lazy-initialise numpy array cache so errFunc works even when called
-        # directly without a prior fit() / initGuessAll() call.
-        if self.dataset.rsds and not hasattr(self.dataset.rsds[0].dspCurves[0], 'v_arr'):
-            self._cache_arrays()
-
-        # --- Unpack global exchange-rate parameters ---
-        j = 0
-        if self.model == 'Matrix':
-            kAB = p[0]
-            kBA = p[1]
-            j = 2
-        elif self.model == 'London':
-            kAB = p[0]
-            kBA = p[1]
-            j = 2
-        elif self.model == 'Meiboom':
-            kex = p[0]
-            j = 1
-        else:
-            raise ValueError('Error: wrong model %r (expected Matrix, London or Meiboom)'
-                             % self.model)
-
-        nres = len(self.dataset.rsds)  # total number of residues
-        dd   = []   # per-residue csd or phi values (length nres)
-        R2_0 = []   # per-residue R2_0 lists (length nres × nFields)
-
-        # --- Unpack per-residue local parameters ---
-        for i in range(0, nres):
-            if self.dataset.rsds[i].active:
-                dd.append(p[j])   # dd (csd or phi) for this residue
-                j += 1
-                R2_0.append([])
-                for ii in range(0, len(self.dataset.rsds[i].R2_0)):
-                    R2_0[i].append(p[j])   # R2_0 at each field
-                    j += 1
-            else:
-                # Inactive residue: placeholder values (not used in residuals)
-                dd.append(0.0)
-                R2_0.append([])
-
-        # --- Compute weighted residuals ---
-        if self.model == 'Matrix':
-            # Batched path: evaluate all residues sharing a CPMG grid at once.
-            if not hasattr(self, '_batch_groups'):
-                self._build_batch_plan()
-            R2_residuals = np.empty(self._n_residuals)
-            two_pi = 2.0 * pi
-            for g in self._batch_groups:
-                members = g['members']
-                # Per-curve chemical shift (rad/s) and intrinsic R2 for this group
-                domega_arr = np.fromiter(
-                    (dd[i_res] * two_pi * fld
-                     for (i_res, _), fld in zip(members, g['fields'])),
-                    dtype=float, count=len(members))
-                R2_0_arr = np.fromiter(
-                    (R2_0[i_res][j] for (i_res, j) in members),
-                    dtype=float, count=len(members))
-
-                R2_clc = self.R2_clc_matrix2_batch(
-                    kAB, kBA, domega_arr, R2_0_arr,
-                    g['v_arr'], g['delta_arr'], g['n_arr'], g['tcp'])   # (C, V)
-
-                res_block = (g['R2exp'] - R2_clc) / g['R2stddev']  # (C, V)
-                for row, (start, stop) in enumerate(g['slices']):
-                    R2_residuals[start:stop] = res_block[row]
-        else:
-            # Per-curve path for the analytic London / Meiboom models
-            n_total = sum(len(res.dspCurves[j].R2exp)
-                          for res in self.dataset.rsds if res.active
-                          for j in range(len(res.dspCurves)))
-            R2_residuals = np.empty(n_total)
-            idx = 0
-            for i in range(0, nres):
-                res = self.dataset.rsds[i]
-                if res.active:
-                    for j in range(0, len(res.dspCurves)):
-                        dsp = res.dspCurves[j]
-                        n   = len(dsp.v_arr)
-
-                        if self.model == 'London':
-                            domega = dd[i] * 2 * pi * dsp.field
-                            R2_clc = self.R2_clc_london_vec(
-                                kAB, kBA, domega, R2_0[i][j], dsp.v_arr)
-                        elif self.model == 'Meiboom':
-                            R2_clc = self.R2_clc_meiboom_vec(
-                                kex, dd[i], R2_0[i][j], dsp.v_arr, dsp.field)
-
-                        R2_residuals[idx:idx + n] = (dsp.R2exp_arr - R2_clc) / dsp.R2stddev_arr
-                        idx += n
-
-        # --- Chi² and degrees of freedom ---
-        self.chi2 = float(np.dot(R2_residuals, R2_residuals))
-
-        self.dof  = len(R2_residuals) - len(p)  # degrees of freedom
-        self.npar = len(p)
-        self.nvar = len(R2_residuals)
-
-        if self.verbose:
-            # Guard against dof ≤ 0 (can happen with too few data points)
-            red_chi2 = self.chi2 / self.dof if self.dof > 0 else float('nan')
-            if self.model in ('Matrix', 'London'):
-                print('kAB=%8.3f kBA=%8.3f  red_chi2=%12.3f  dof=%d  nv=%d  np=%d'
-                      % (kAB, kBA, red_chi2, self.dof, len(R2_residuals), len(p)))
-            elif self.model == 'Meiboom':
-                print('kex=%8.3f            red_chi2=%12.3f  dof=%d  nv=%d  np=%d'
-                      % (kex, red_chi2, self.dof, len(R2_residuals), len(p)))
-
-        return R2_residuals
+        return fitting.err_func(self, p)
 
     # -------------------------------------------------------------------------
     # Fitting routines
     # -------------------------------------------------------------------------
 
     def fit(self):
-        """Run nonlinear least-squares fitting for all active residues.
-
-        Builds the initial parameter vector, calls scipy.optimize.leastsq,
-        and updates the global exchange-rate parameters (kAB / kBA / kex) and
-        per-residue local parameters (dd, R2_0) in place.
-
-        If the covariance matrix is None (singular fit), standard deviations
-        are set to zero and a warning is printed.
-        """
-        # Cache numpy arrays so errFunc can use pre-allocated v_arr, R2exp_arr, R2stddev_arr
-        self._cache_arrays()
-
-        # Invalidate the leave-one-out cache: a new global solution changes it.
-        self._loo_cache = None
-
-        # --- Build initial parameter vector p0 ---
-        p0 = []
-
-        if self.model in ('Matrix', 'London'):
-            p0.append(self.kAB)  # global: kAB
-            p0.append(self.kBA)  # global: kBA
-        elif self.model == 'Meiboom':
-            p0.append(self.kex)  # global: kex
-
-        self.getLocalParams(p0)  # append per-residue dd and R2_0 values
-
-        # --- Perform optimisation ---
-        if self.verbose:
-            print(p0)
-        out = leastsq(self.errFunc, x0=p0, full_output=1)
-
-        p1    = out[0]  # solution vector
-        covar = out[1]  # covariance matrix (None when fit is singular)
-        self.covar = covar
-        _warn_if_not_converged(out)
-
-        if covar is None:
-            print('Warning: covariance matrix is None (fit may be singular). '
-                  'Standard deviations set to 0.')
-
-        # --- Update global parameters from solution ---
-        if self.model in ('Matrix', 'London'):
-            self.kAB     = p1[0]
-            self.kBA     = p1[1]
-            self.kAB_std = sqrt(covar[0][0]) if covar is not None else 0.0
-            self.kBA_std = sqrt(covar[1][1]) if covar is not None else 0.0
-        elif self.model == 'Meiboom':
-            self.kex     = p1[0]
-            self.kex_std = sqrt(covar[0][0]) if covar is not None else 0.0
-
-        self.setLocalParams(p1, covar)  # unpack per-residue parameters
-        if self.verbose:
-            print()
+        return fitting.fit(self)
 
     # -------------------------------------------------------------------------
     # Individual fitting and AIC-based model comparison
     # -------------------------------------------------------------------------
 
     def _build_p0_current(self):
-        """Build the parameter vector from the current global + local state.
-
-        Layout matches errFunc: [global params, dd, R2_0..., dd, R2_0..., ...]
-        for every currently-active residue.
-
-        Returns:
-            list: initial-parameter vector p0.
-        """
-        p0 = []
-        if self.model == 'Meiboom':
-            p0.append(self.kex)
-        else:
-            p0.append(self.kAB)
-            p0.append(self.kBA)
-        self.getLocalParams(p0)
-        return p0
+        return fitting.build_p0_current(self)
 
     def fit_individual(self):
         """Fit every active residue independently (its own exchange parameters).
@@ -953,89 +615,10 @@ class CPMG_model:
         return report.aic_report(self, cmp)
 
     def _build_grid_p0(self, kex_val, pB_val, csd_val):
-        """Build a parameter vector for a grid search point without modifying state.
-
-        Constructs the full parameter vector [global_params, dd_r0, R2_0_r0_f0, ...]
-        directly from the given grid values, bypassing init_dd() / getLocalParams()
-        so that multiple threads can call this concurrently.
-
-        Args:
-            kex_val (float): Total exchange rate for this grid point (s^-1).
-            pB_val  (float): Minor-state population for this grid point.
-            csd_val (float): Chemical shift difference (ppm) for this grid point.
-
-        Returns:
-            np.ndarray: Parameter vector ready to pass to errFunc.
-        """
-        p0 = []
-        if self.model in ('Matrix', 'London'):
-            kAB = pB_val * kex_val
-            kBA = kex_val - kAB
-            p0.append(kAB)
-            p0.append(kBA)
-            dd = csd_val
-        else:  # Meiboom
-            p0.append(kex_val)
-            dd = pB_val * (1.0 - pB_val) * csd_val ** 2
-
-        for r in self.dataset.rsds:
-            if r.active:
-                p0.append(dd)
-                for r2_0 in r.R2_0:
-                    p0.append(r2_0)
-        return np.array(p0)
+        return fitting.build_grid_p0(self, kex_val, pB_val, csd_val)
 
     def initGuessAll(self):
-        """Grid-search for the best initial parameter values before fitting.
-
-        Evaluates chi² on a coarse grid of (kex, pB, csd) combinations and
-        selects the combination that gives the lowest chi².  The grid covers::
-
-            kex  : [100, 500, 1000, 2000, 4000, 10000] s^-1
-            pB   : [0.05, 0.1, 0.2, 0.4]
-            csd  : [0.1, 0.5, 1.0, 2.0, 4.0, 10.0] ppm
-
-        Sets self.kAB / self.kBA (or self.kex) and per-residue dd to the
-        best-guess values, and initialises R2_0 from the data.
-        """
-        # Coarse parameter grids for the global search
-        kex = [100.0, 500.0, 1000.0, 2000.0, 4000.0, 10000.0]
-        pB  = [0.05, 0.1, 0.2, 0.4]
-        csd = [0.1, 0.5, 1.0, 2.0, 4.0, 10.0]
-
-        # Cache numpy arrays once before the grid-search loop
-        self._cache_arrays()
-
-        # Initialise R2_0 from the last (highest-nu) experimental data point
-        self.init_R2_0()
-
-        # --- Exhaustive grid search ---
-        # Uses _build_grid_p0 to avoid mutating instance state per grid point.
-        minChi2 = 9.0e99
-        ii_kex = ii_pB = ii_csd = 0
-
-        for i_kex, kv in enumerate(kex):
-            for i_pB, pv in enumerate(pB):
-                for i_csd, cv in enumerate(csd):
-                    p0 = self._build_grid_p0(kv, pv, cv)
-                    residuals = self.errFunc(p0)
-                    chi2 = float(np.dot(residuals, residuals))
-                    if chi2 < minChi2:
-                        minChi2 = chi2
-                        ii_kex, ii_pB, ii_csd = i_kex, i_pB, i_csd
-
-        # --- Apply the best-guess values ---
-        print('Initial values:')
-        if self.model in ('Matrix', 'London'):
-            self.kAB = pB[ii_pB] * kex[ii_kex]
-            self.kBA = kex[ii_kex] - self.kAB
-            self.init_dd(csd[ii_csd])
-            print('kAB: %8.3f kBA: %8.3f CSD: %8.3f' % (self.kAB, self.kBA, csd[ii_csd]))
-        elif self.model == 'Meiboom':
-            self.kex = kex[ii_kex]
-            self.init_dd(pB[ii_pB] * (1.0 - pB[ii_pB]) * csd[ii_csd] ** 2)
-            print('kex: %8.3f phi: %8.3f'
-                  % (self.kex, pB[ii_pB] * (1.0 - pB[ii_pB]) * csd[ii_csd] ** 2))
+        return fitting.init_guess_all(self)
 
     # -------------------------------------------------------------------------
     # Reporting

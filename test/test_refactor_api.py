@@ -7,7 +7,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
-from cpmg import models, report
+from cpmg import fitting, models, report
 from cpmg.model_2state import CPMG_model
 
 # Facade method -> module function, for the seven pure R2 formulas.
@@ -42,6 +42,16 @@ def test_names_exist_on_facade():
 def test_module_functions_exist():
     for _, fn in PAIRS:
         assert callable(getattr(models, fn)), fn
+
+
+def test_fitting_facade_delegates():
+    for name, fn in [('init_dd', 'init_dd'), ('init_R2_0', 'init_R2_0'),
+                     ('getLocalParams', 'get_local_params'), ('setLocalParams', 'set_local_params'),
+                     ('_cache_arrays', 'cache_arrays'), ('_build_batch_plan', 'build_batch_plan'),
+                     ('errFunc', 'err_func'), ('fit', 'fit'), ('_build_p0_current', 'build_p0_current'),
+                     ('_build_grid_p0', 'build_grid_p0'), ('initGuessAll', 'init_guess_all')]:
+        assert hasattr(CPMG_model, name), name
+        assert callable(getattr(fitting, fn)), fn
 
 
 def test_report_facade_delegates():
@@ -126,6 +136,7 @@ def test_edge_values_unchanged():
 if __name__ == '__main__':
     test_names_exist_on_facade()
     test_module_functions_exist()
+    test_fitting_facade_delegates()
     test_report_facade_delegates()
     test_import_does_not_load_matplotlib()
     test_facade_equals_module_exactly()
