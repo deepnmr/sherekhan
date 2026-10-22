@@ -3,13 +3,15 @@
 # Original code: Adam Mazur et al., MPI Goettingen, 2012
 ###
 """
-model_2state.py — Two-state exchange fitting models for NMR CPMG data.
+model_2state.py — CPMG_model facade for two-state exchange fitting.
 
-This module implements the CPMG_model class, which wraps:
-  * Three R2 calculation models (Matrix, London, Meiboom)
-  * A nonlinear least-squares fitting engine (scipy.optimize.leastsq)
-  * Log-file and PDF report generation
-  * Conversion of Matrix/London results to Meiboom representation
+This module holds only the CPMG_model class: its state, its __init__, and
+one-line delegators. The work lives in four modules, each function taking
+the CPMG_model instance as its first argument:
+  * models   — R2 calculation formulas (Matrix, London, Meiboom)
+  * fitting  — parameter packing and the leastsq fitting engine
+  * analysis — individual fits, AICc model comparison, jackknife, Meiboom conversion
+  * report   — log-file, PDF and JSON report generation
 
 Exchange Models
 ---------------
@@ -32,23 +34,13 @@ Max-Planck-Institute for Biophysical Chemistry, Goettingen, 2012
 Copyright (c) 2025-2026 Prof. Dr. Donghan Lee, Korea Basic Science Institute (KBSI)
 """
 
-import sys
-import numpy as np
-from numpy import array, sqrt, pi, dot, real, log, sin, sinh, cos, cosh, exp, zeros, sort, tanh, isfinite
-from scipy.optimize import leastsq
-
 from . import __version__
 from . import report
 from .cpmg import CPMGDataSet
 from . import models
 from . import fitting
-from .fitting import _warn_if_not_converged
 from .analysis import derived_std as _derived_std
-from .models import _echo_count
 from . import analysis
-from scipy.linalg import expm          # matrix exponential
-from numpy.linalg import matrix_power  # integer matrix power
-from numpy import diag
 
 
 
