@@ -7,8 +7,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
-from cpmg import fitting, models, report
-from cpmg.model_2state import CPMG_model
+from cpmg import analysis, fitting, models, report
+from cpmg.model_2state import CPMG_model, _derived_std
 
 # Facade method -> module function, for the seven pure R2 formulas.
 PAIRS = [
@@ -58,6 +58,29 @@ def test_report_facade_delegates():
     for name in ('_calc_r2', 'getLogBuffer', 'reportAllValues', 'aicReport', 'jackknifeReport', 'pdf'):
         assert hasattr(CPMG_model, name), name
     assert callable(report.write_pdf) and callable(report.log_buffer)
+
+
+def test_analysis_facade_delegates():
+    for name, fn in [('fit_individual', 'fit_individual'), ('_aic', 'aic'),
+                     ('compareModelsAIC', 'compare_models_aic'),
+                     ('_refresh_global_stats', 'refresh_global_stats'),
+                     ('_leave_one_out_kex', 'leave_one_out_kex'),
+                     ('_per_residue_global_chi2', 'per_residue_global_chi2'),
+                     ('jackknifeGlobal', 'jackknife_global'), ('_kex_pB', 'kex_pB'),
+                     ('toMeiboom', 'to_meiboom')]:
+        assert hasattr(CPMG_model, name), name
+        assert callable(getattr(analysis, fn)), fn
+
+
+def test_aic_and_derived_std_exact():
+    # Values recorded from the pre-step tree (bf260f1).
+    assert CPMG_model._aic(10.5, 3, 50) == (16.5, 17.02173913043478)
+    assert CPMG_model._aic(7., 2, 3) == (11.0, float('inf'))
+    C = np.array([[100., -180., .3], [-180., 400., -.6], [.3, -.6, .01]])
+    kex_std, pB_std, phi_std = _derived_std(100., 900., 2., C)
+    assert abs(kex_std - 11.832159566199) < 1e-10
+    assert abs(pB_std - 0.010835128056) < 1e-10
+    assert abs(phi_std - 0.057083237470) < 1e-10
 
 
 def test_import_does_not_load_matplotlib():
@@ -138,6 +161,8 @@ if __name__ == '__main__':
     test_module_functions_exist()
     test_fitting_facade_delegates()
     test_report_facade_delegates()
+    test_analysis_facade_delegates()
+    test_aic_and_derived_std_exact()
     test_import_does_not_load_matplotlib()
     test_facade_equals_module_exactly()
     test_edge_values_unchanged()
