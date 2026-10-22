@@ -1,12 +1,13 @@
 """Refactor guard: the CPMG_model facade keeps its names and delegates exactly to cpmg.models."""
 import os
+import subprocess
 import sys
 
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
-from cpmg import models
+from cpmg import models, report
 from cpmg.model_2state import CPMG_model
 
 # Facade method -> module function, for the seven pure R2 formulas.
@@ -41,6 +42,21 @@ def test_names_exist_on_facade():
 def test_module_functions_exist():
     for _, fn in PAIRS:
         assert callable(getattr(models, fn)), fn
+
+
+def test_report_facade_delegates():
+    for name in ('_calc_r2', 'getLogBuffer', 'reportAllValues', 'aicReport', 'jackknifeReport', 'pdf'):
+        assert hasattr(CPMG_model, name), name
+    assert callable(report.write_pdf) and callable(report.log_buffer)
+
+
+def test_import_does_not_load_matplotlib():
+    out = subprocess.run(
+        [sys.executable, '-c',
+         "import sys, cpmg.model_2state; print('matplotlib' in sys.modules)"],
+        cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'),
+        capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == 'False', out.stdout
 
 
 def _cases():
@@ -110,6 +126,8 @@ def test_edge_values_unchanged():
 if __name__ == '__main__':
     test_names_exist_on_facade()
     test_module_functions_exist()
+    test_report_facade_delegates()
+    test_import_does_not_load_matplotlib()
     test_facade_equals_module_exactly()
     test_edge_values_unchanged()
     print('test_refactor_api: OK')
