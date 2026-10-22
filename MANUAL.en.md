@@ -1,4 +1,4 @@
-# ShereKhan Step-by-Step Manual — Individual vs Global fit + Jackknife validation
+# ShereKhan 1.3.0 Step-by-Step Manual — Individual vs Global fit + Jackknife validation
 
 > 🌐 [한국어](MANUAL.ko.md) · **English**
 

@@ -253,6 +253,9 @@ Machine-readable stdout JSON — labelled blocks:
 - The `##### model_comparison` / `##### jackknife` blocks are strict JSON (non-finite values become `null`).
 - **The line after the last `#####` is the residue result list** (compatible with existing parsers, `split('#####')[-1]`).
 - When `compare_aic`/`jackknife` are off, the corresponding block is not written.
+- Each `jackknife.per_residue[]` entry has an `influential` boolean. It's `true` when the jackknife SE of kex is > 0 and dropping that residue moves kex by more than 2 SE: `|kex_full - kex_i| > 2 * SE`. The `.log` marks these residues with `*`.
+- Uncertainties of kex, pB and phi are propagated from the fit covariance matrix, so `phiStdDev` differs slightly from 1.2.x. If the covariance is singular, the standard deviations can't be computed and a warning is printed.
+- Known model and fitting limitations are listed in [`MANUAL.en.md`](MANUAL.en.md) §13 (Known limitations).
 
 ---
 
@@ -274,7 +277,10 @@ Machine-readable stdout JSON — labelled blocks:
 
 
 - Line 1, `field`: Larmor frequency (MHz) of the observed nucleus, e.g. 60.8 MHz for 15N on a 600 MHz spectrometer. Line 2: tcp (s).
-- Each data row needs exactly 3 numbers, and `Esd(R2)` must be > 0. A residue label line starts with `#`.
+- `field` and `tcp` must be finite and > 0.
+- Each data row needs exactly 3 numbers: `nu_cpmg` finite and > 0, `R2` finite, and `Esd(R2)` (sigma) finite and > 0.
+- A residue label line has the form `# <one token>`, a `#` followed by a single name.
+- A residue with a label but no data rows is dropped.
 - A file that breaks these rules stops with `<prog>: error: <file>:<line>: ...` and exit code 1.
 
 ---

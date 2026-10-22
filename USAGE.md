@@ -251,6 +251,9 @@ stdout JSON 연동 (프로그램 처리) — 라벨된 블록:
 - `##### model_comparison` / `##### jackknife` 블록은 strict JSON (비유한값은 `null`).
 - **마지막 `#####` 다음 줄이 잔기 결과 리스트** (기존 파서 호환, `split('#####')[-1]`).
 - `compare_aic`/`jackknife`가 꺼져 있으면 해당 블록은 출력되지 않는다.
+- `jackknife.per_residue[]`의 각 항목에는 `influential` boolean이 있다. kex의 잭나이프 SE가 0보다 크고, 그 잔기를 뺐을 때 kex가 2 SE보다 크게 움직이면 `true`다: `|kex_full - kex_i| > 2 * SE`. `.log`에서는 이 잔기에 `*`가 붙는다.
+- kex, pB, phi의 불확도는 fit 공분산 행렬에서 전파되므로 `phiStdDev`가 1.2.x와 조금 다르다. 공분산이 특이(singular)하면 표준편차를 계산할 수 없고 경고가 출력된다.
+- 모델과 fitting의 알려진 한계는 [`MANUAL.ko.md`](MANUAL.ko.md) §13 (알려진 한계)에 정리되어 있다.
 
 ---
 
@@ -272,7 +275,10 @@ stdout JSON 연동 (프로그램 처리) — 라벨된 블록:
 
 
 - 1번째 줄 `field`: 관측 핵의 Larmor 주파수 (MHz). 예: 600 MHz 분광기의 15N은 60.8 MHz. 2번째 줄: tcp (s).
-- 데이터 줄은 숫자 정확히 3개, `Esd(R2)`는 0보다 커야 한다. 잔기 라벨 줄은 `#`으로 시작.
+- `field`와 `tcp`는 유한한 양수여야 한다.
+- 데이터 줄은 숫자 정확히 3개: `nu_cpmg`는 유한한 양수, `R2`는 유한값, `Esd(R2)` (sigma)는 유한한 양수여야 한다.
+- 잔기 라벨 줄은 `# <토큰 하나>` 형식, 즉 `#` 뒤에 이름 하나.
+- 라벨만 있고 데이터 줄이 없는 잔기는 제외된다.
 - 규칙 위반 파일은 `<prog>: error: <file>:<line>: ...`과 종료 코드 1로 멈춘다.
 
 ---

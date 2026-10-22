@@ -1,4 +1,4 @@
-# ShereKhan 단계별 매뉴얼 — Individual vs Global fit + Jackknife 검증
+# ShereKhan 1.3.0 단계별 매뉴얼 — Individual vs Global fit + Jackknife 검증
 
 > 🌐 **한국어** · [English](MANUAL.en.md)
 
