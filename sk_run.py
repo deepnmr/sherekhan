@@ -4,7 +4,7 @@ sk_run.py — ShereKhan fitting runner.
 
 Usage
 -----
-    python sk_run.py <config.json>
+    sk-run [--quiet] <config.json>
 
 Reads a JSON configuration file that specifies the input .dat files, the
 exchange regime, the fitting model, initial parameter values (or 'guess'),
@@ -14,9 +14,10 @@ and a PDF plot, and prints the detailed JSON results to stdout.
 Config file keys
 ----------------
   Project Name : str   — base name for .log and .pdf output files
-  datasets     : list  — paths to input .dat files (one per field)
-  exchange     : str   — 'fast' or 'slow'
-  model        : str   — 'Matrix', 'London', or 'Meiboom'
+  datasets     : list  — paths to input .dat files (one per field); relative
+                         paths resolve from the CWD, then from the config's dir
+  exchange     : str   — 'fast', 'slow' or 'undefined' (runs as Matrix/London)
+  model        : str   — 'Matrix', 'London', or 'Meiboom' (Meiboom needs 'fast')
   init
     mode       : str   — 'guess' (grid search) or 'values' (explicit)
     kex        : float — total exchange rate (s^-1), used when mode='values'
@@ -27,6 +28,11 @@ Config file keys
     phi        : float — effective phi parameter (ppm^2), mode='values',
                          model == 'Meiboom'
   residues     : list  — dicts with 'name' and 'flag' ('on'/'off') keys
+  compare_aic  : bool  — optional, global vs individual AIC comparison
+  jackknife    : bool  — optional, leave-one-residue-out validation
+
+Exit status: 0 on success, 1 on an input or runtime error (one
+`sk-run: error: ...` line on stderr), 2 on a usage error.
 
 Authors
 -------
@@ -46,12 +52,20 @@ Copyright (c) 2025-2026 Prof. Dr. Donghan Lee, Korea Basic Science Institute (KB
 # Original code: Adam Mazur et al., MPI Goettingen, 2012
 ###
 
-from sys import argv, stdout
+from sys import stdout, stderr
 
+import argparse
 import json
 import math
+import os
 
+from cpmg import __version__
 from cpmg.model_2state import CPMG_model
+
+EXCHANGES = ('fast', 'slow', 'undefined')
+MODELS    = ('Matrix', 'London', 'Meiboom')
+INIT_MODES = ('guess', 'values')
+FLAGS     = ('on', 'off')
 
 
 def _finite_json(obj):
@@ -73,36 +87,120 @@ def _finite_json(obj):
     return json.dumps(clean(obj))
 
 
-def main():
-    """Run a ShereKhan fit from a JSON config file passed as argv[1]."""
-    if len(argv) < 2:
-        print('Usage: sk_run.py <config.json>')
-        raise SystemExit(1)
+def _is_number(x):
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(x))
+    except OverflowError:
+        return False
+
+
+def _check_config(conf, path):
+    """Raise ValueError naming the offending key if the config is not runnable."""
+    def fail(msg):
+        raise ValueError('config %s: %s' % (path, msg))
+
+    if not isinstance(conf, dict):
+        fail('top level must be a JSON object')
+
+    name = conf.get('Project Name')
+    if not isinstance(name, str) or not name.strip():
+        fail('"Project Name" must be a non-empty string')
+
+    datasets = conf.get('datasets')
+    if (not isinstance(datasets, list) or not datasets
+            or not all(isinstance(d, str) for d in datasets)):
+        fail('"datasets" must be a non-empty list of file paths')
+
+    exchange = conf.get('exchange')
+    if exchange not in EXCHANGES:
+        fail('"exchange" must be one of %s (got %s)'
+             % (', '.join(EXCHANGES), json.dumps(exchange)))
+
+    model = conf.get('model')
+    if model not in MODELS:
+        fail('"model" must be one of %s (got %s)'
+             % (', '.join(MODELS), json.dumps(model)))
+    if model == 'Meiboom' and exchange != 'fast':
+        fail('"model" Meiboom requires "exchange" to be "fast" (got %s)'
+             % json.dumps(exchange))
+
+    init = conf.get('init')
+    if not isinstance(init, dict):
+        fail('"init" must be an object')
+    mode = init.get('mode')
+    if mode not in INIT_MODES:
+        fail('"init.mode" must be one of %s (got %s)'
+             % (', '.join(INIT_MODES), json.dumps(mode)))
+    if mode == 'values':
+        if not _is_number(init.get('kex')) or init['kex'] <= 0:
+            fail('"init.kex" must be a number > 0')
+        if model == 'Meiboom':
+            if not _is_number(init.get('phi')):
+                fail('"init.phi" must be a number')
+        else:
+            pB = init.get('pB')
+            if not _is_number(pB) or not 0 < pB < 1:
+                fail('"init.pB" must be a number between 0 and 1')
+            if not _is_number(init.get('csd')):
+                fail('"init.csd" must be a number')
+
+    residues = conf.get('residues')
+    if not isinstance(residues, list):
+        fail('"residues" must be a list')
+    for i, rsd in enumerate(residues):
+        if not isinstance(rsd, dict) or not isinstance(rsd.get('name'), str):
+            fail('"residues[%d]" must be an object with a string "name"' % i)
+        if rsd.get('flag') not in FLAGS:
+            fail('"residues[%d].flag" must be "on" or "off" (got %s)'
+                 % (i, json.dumps(rsd.get('flag'))))
+
+    for key in ('compare_aic', 'jackknife'):
+        if key in conf and not isinstance(conf[key], bool):
+            fail('"%s" must be true or false' % key)
+
+
+def _resolve_dataset(dataset, conf_dir):
+    """Return the first existing path: as given (CWD), then relative to the config."""
+    for candidate in (dataset, os.path.join(conf_dir, dataset)):
+        if os.path.exists(candidate):
+            return candidate
+    raise ValueError('dataset not found: %s' % dataset)
+
+
+def run(config_path, quiet):
+    """Run the fit described by config_path. Raises on any input error."""
+    with open(config_path) as configFile:
+        try:
+            conf = json.load(configFile)
+        except json.JSONDecodeError as exc:
+            raise ValueError('config %s: invalid JSON: %s' % (config_path, exc))
+    _check_config(conf, config_path)
+    conf_dir = os.path.dirname(os.path.abspath(config_path))
+
+    logDir = os.path.dirname(conf['Project Name'] + '.log') or '.'
+    if not os.path.isdir(logDir):
+        raise ValueError('output directory does not exist: %s' % logDir)
 
     # -----------------------------------------------------------------------
     # Initialise the fitting model and print the program banner
     # -----------------------------------------------------------------------
     m2 = CPMG_model()
-    m2.verbose = True  # print chi² at each function evaluation
+    m2.verbose = not quiet  # print chi² at each function evaluation
 
     print('********')
     stdout.write(m2.programName)
     print('********')
-
-    # -----------------------------------------------------------------------
-    # Load the JSON configuration file
-    # -----------------------------------------------------------------------
-    with open(argv[1]) as configFile:
-        conf = json.load(configFile)
 
     projectName   = conf['Project Name']  # base name for output files
     datasetsNames = conf['datasets']      # list of .dat file paths
 
     # Add each field's dispersion data to the dataset
     for dataset in datasetsNames:
-        m2.dataset.addField(dataset)
+        m2.dataset.addField(_resolve_dataset(dataset, conf_dir))
 
-    exchange = conf['exchange']  # 'fast' or 'slow'
+    exchange = conf['exchange']  # 'fast', 'slow' or 'undefined'
     model    = conf['model']     # 'Matrix', 'London', or 'Meiboom'
 
     print('Exchange is: ' + exchange)
@@ -152,13 +250,7 @@ def main():
 
         for rsd in m2.dataset.rsds:
             if rsd.label == resId:
-                if active == 'on':
-                    rsd.active = True
-                elif active == 'off':
-                    rsd.active = False
-                else:
-                    print('Error: wrong flag for the residue' + resId + ' ' + active)
-                    raise SystemExit(1)
+                rsd.active = (active == 'on')
 
     # -----------------------------------------------------------------------
     # Set the exchange regime and fitting model
@@ -229,7 +321,7 @@ def main():
     # -----------------------------------------------------------------------
     # Write outputs: log file, PDF, and JSON to stdout
     # -----------------------------------------------------------------------
-    logBuf = m2.getLogBuffer(argv[1])
+    logBuf = m2.getLogBuffer(config_path)
 
     # Append the AIC model-comparison block to the log when it was computed
     if aicReportText is not None:
@@ -260,7 +352,36 @@ def main():
 
     # JSON results are printed to stdout so they can be piped or captured
     print("#####")
-    print(json.dumps(out))
+    print(_finite_json(out))
+
+
+class _UsageParser(argparse.ArgumentParser):
+    """ArgumentParser that reports usage errors as one stderr line."""
+
+    def error(self, message):
+        self.exit(2, '%s: error: %s (use -h for help)\n' % (self.prog, message))
+
+
+def main(argv=None):
+    """Command-line entry point: parse options, run, and map input errors to exit 1."""
+    parser = _UsageParser(
+        prog='sk-run',
+        description='Run a ShereKhan CPMG relaxation-dispersion fit from a JSON config.')
+    parser.add_argument('config', help='JSON run configuration file (e.g. run.conf)')
+    parser.add_argument('--quiet', action='store_true',
+                        help='do not print chi2 progress lines during fitting')
+    parser.add_argument('--version', action='version',
+                        version='%(prog)s ' + __version__)
+    args = parser.parse_args(argv)
+
+    try:
+        run(args.config, args.quiet)
+    except KeyError as exc:
+        stderr.write('sk-run: error: missing key %s\n' % exc)
+        raise SystemExit(1)
+    except (OSError, ValueError, TypeError) as exc:
+        stderr.write('sk-run: error: %s\n' % exc)
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

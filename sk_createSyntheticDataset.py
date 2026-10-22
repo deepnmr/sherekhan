@@ -41,21 +41,48 @@ Copyright (c) 2025-2026 Prof. Dr. Donghan Lee, Korea Basic Science Institute (KB
 # Original code: Adam Mazur et al., MPI Goettingen, 2012
 ###
 
+import argparse
+import os
 import numpy as np
 from sys import stderr
+from cpmg import __version__
 from cpmg.model_2state import CPMG_model
 from numpy.random import randn
 
 
+class _UsageParser(argparse.ArgumentParser):
+    """ArgumentParser that reports usage errors as one stderr line."""
+
+    def error(self, message):
+        self.exit(2, '%s: error: %s (use -h for help)\n' % (self.prog, message))
+
+
+def _seed(text):
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError('must be >= 0 (got %d)' % value)
+    return value
+
+
 def main():
     """Generate synthetic fast-exchange CPMG .dat files (one per field)."""
+    parser = _UsageParser(
+        prog='sk-synth',
+        description='Generate synthetic fast-exchange CPMG .dat files (synth-60.dat, synth-90.dat).')
+    parser.add_argument('--seed', type=_seed, default=None,
+                        help='seed for reproducible noise (default: unseeded)')
+    parser.add_argument('--outdir', default='.', metavar='DIR',
+                        help='directory for the .dat files (created if missing; default: current directory)')
+    parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)
+    args = parser.parse_args()
+
     # Use the model object only to call the R2_clc_matrix function
     m2 = CPMG_model()
 
     # -----------------------------------------------------------------------
     # Simulation parameters
     # -----------------------------------------------------------------------
-    fields   = [60.12, 90.23]  # [MHz] — proton Larmor frequencies (1H fields)
+    fields   = [60.12, 90.23]  # [MHz] — Larmor frequencies of the observed nucleus (15N at 600/900 MHz spectrometers)
     r20_fc   = [0.0, 2.0]      # [s^-1] — per-field R2_0 offset added to each residue's R2_0
     tcp      = 0.04             # [s]   — CPMG pulse delay (total echo time)
 
@@ -76,6 +103,14 @@ def main():
                        500.0, 600.0, 700.0, 800.0, 900.0, 1000.0])
 
     noiseRatio = 0.02  # Gaussian noise amplitude as a fraction of the ideal R2eff
+
+    # Seeded generator gives byte-identical output; unseeded keeps the legacy global RNG
+    draw = randn if args.seed is None else np.random.default_rng(args.seed).standard_normal
+    try:
+        os.makedirs(args.outdir, exist_ok=True)
+    except OSError as exc:
+        stderr.write('sk-synth: error: %s: %s\n' % (exc.filename, exc.strerror))
+        raise SystemExit(1)
 
     # -----------------------------------------------------------------------
     # Generate and write one .dat file per magnetic field
@@ -105,13 +140,18 @@ def main():
                 r2effStd = r2eff_ideal * noiseRatio
 
                 # Add Gaussian noise to simulate experimental scatter
-                r2eff = r2effStd * randn() + r2eff_ideal
+                r2eff = r2effStd * draw() + r2eff_ideal
 
                 buff += '%8.3f %8.3f %8.3f\n' % (v, r2eff, r2effStd)
 
         # Write the .dat file; filename encodes the field in MHz (integer)
-        with open('synth-%d.dat' % int(field), 'w') as file1:
-            file1.write(buff)
+        outPath = os.path.join(args.outdir, 'synth-%d.dat' % int(field))
+        try:
+            with open(outPath, 'w') as file1:
+                file1.write(buff)
+        except OSError as exc:
+            stderr.write('sk-synth: error: %s: %s\n' % (exc.filename, exc.strerror))
+            raise SystemExit(1)
 
     stderr.write('Done.\n')
 

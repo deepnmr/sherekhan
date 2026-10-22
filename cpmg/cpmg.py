@@ -12,6 +12,21 @@ Residue         : A protein residue observed at one or more field strengths.
 CPMGDataSet     : Collection of all residues and their dispersion curves.
 """
 
+import math
+import sys
+
+
+def _number(token, fileName, lineno, what):
+    """Parse one finite number from a .dat file, raising ValueError with file:line."""
+    try:
+        value = float(token)
+    except ValueError:
+        value = None
+    if value is None or not math.isfinite(value):
+        raise ValueError('%s:%d: %s must be a finite number, got %r'
+                         % (fileName, lineno, what, token))
+    return value
+
 
 class DispersionCurve:
     """R2 relaxation-dispersion data measured at a single magnetic field.
@@ -19,9 +34,10 @@ class DispersionCurve:
     Attributes
     ----------
     field    : float
-        Static magnetic field strength in MHz (proton Larmor frequency).
+        Larmor frequency in MHz of the observed nucleus (e.g. 15N at 600 MHz
+        spectrometer frequency -> 60.8 MHz).
     tcp      : float
-        CPMG pulse delay (time between 180° pulses) in seconds.
+        Total CPMG relaxation delay in seconds.
     v        : list of float
         CPMG pulsing frequencies (nu_CPMG) in Hz.
     R2exp    : list of float
@@ -33,8 +49,8 @@ class DispersionCurve:
     """
 
     def __init__(self):
-        self.field = 0.0    # MHz  — static field (proton Larmor frequency)
-        self.tcp = 0.0      # s    — CPMG inter-pulse delay
+        self.field = 0.0    # MHz  — Larmor frequency of the observed nucleus
+        self.tcp = 0.0      # s    — total CPMG relaxation delay
         self.v = []         # Hz   — CPMG pulsing frequencies
         self.R2exp = []     # 1/s  — measured effective R2
         self.R2stddev = []  # 1/s  — experimental uncertainties
@@ -86,9 +102,9 @@ class CPMGDataSet:
     rsds     : list of Residue
         All residues found across all loaded data files.
     fields   : list of float
-        Magnetic field strengths (MHz) in the order they were loaded.
+        Larmor frequencies (MHz) of the observed nucleus, in the order loaded.
     tcps     : list of float
-        CPMG pulse delays (s) corresponding to each field.
+        Total CPMG relaxation delays (s) corresponding to each field.
     exchange : str
         Exchange regime: 'fast', 'slow', or 'undefined'.
     """
@@ -113,77 +129,105 @@ class CPMGDataSet:
             # <NextResidueLabel>
             ...
 
-        Residues that already exist (by label) are extended with a new
-        DispersionCurve; new residues are created automatically.
-        Empty dispersion curves (no data points) are discarded at the end.
+        Blank lines are skipped.  Any other malformed line raises a
+        ValueError naming the file and line number.  Residues that already
+        exist (by label) are extended with a new DispersionCurve; new residues
+        are created automatically.  Labels with no data points are discarded.
 
         Args:
             fileName (str): Path to the .dat input file.
+
+        Raises:
+            FileNotFoundError: if the file does not exist.
+            ValueError: if the file content is malformed (message: file:line).
         """
         with open(fileName, 'r') as inFile:
+            lines = inFile.read().splitlines()
 
-            # First line: static field strength in MHz
-            line = inFile.readline()
-            currentField = float(line)
-            self.fields.append(currentField)
+        # Header lines 1-3 must exist; a missing one is reported at the line it should be on
+        if len(lines) < 1:
+            raise ValueError('%s:1: missing field (MHz) line' % fileName)
+        if len(lines) < 2:
+            raise ValueError('%s:2: missing tcp (s) line' % fileName)
+        if len(lines) < 3:
+            raise ValueError('%s:3: missing column header line' % fileName)
 
-            # Second line: CPMG pulse delay (tcp) in seconds
-            line = inFile.readline()
-            currentTcp = float(line)
-            self.tcps.append(currentTcp)
+        # Line 1: Larmor frequency of the observed nucleus (MHz)
+        currentField = _number(lines[0], fileName, 1, 'field (MHz)')
+        if currentField <= 0.0:
+            raise ValueError('%s:1: field (MHz) must be > 0, got %r' % (fileName, lines[0]))
 
-            # Third line is the column-header comment — skip it
-            line = inFile.readline()
+        # Line 2: total CPMG relaxation delay (s)
+        currentTcp = _number(lines[1], fileName, 2, 'tcp (s)')
+        if currentTcp <= 0.0:
+            raise ValueError('%s:2: tcp (s) must be > 0, got %r' % (fileName, lines[1]))
 
-            # Read residue blocks until end of file
-            line = inFile.readline()
+        # Line 3 is the column-header comment — skipped
 
-            resLabel = None  # last-seen residue label; None until the first label line
-            while line:
-                sline = line.split()
-                if len(sline) == 2:
-                    # Lines with exactly 2 tokens are residue label lines: "# <label>"
-                    resLabel = sline[1]
+        # Blocks of (label, DispersionCurve) in file order
+        blocks = []
+        label = None
+        dc = None
+        for lineno, line in enumerate(lines[3:], start=4):
+            stripped = line.strip()
+            if not stripped:
+                continue
 
-                # A data block must be preceded by a label line; fail clearly if not
-                if resLabel is None:
-                    raise ValueError(
-                        '%s: expected a residue label line ("# <label>") but got: %r'
-                        % (fileName, line.rstrip()))
-
-                # Find an existing Residue with this label, or create a new one
-                res = None
-                for r in self.rsds:
-                    if r.label == resLabel:
-                        res = r
-                        break
-                if res is None:
-                    res = Residue()
-                    res.label = resLabel
-                    self.rsds.append(res)
-
-                # Read the dispersion curve data points that follow the label line
-                line = inFile.readline()
-                sline = line.split()
+            if stripped.startswith('#'):
+                tokens = stripped[1:].split()
+                if len(tokens) != 1:
+                    raise ValueError('%s:%d: residue label line must be "# <label>", got %r'
+                                     % (fileName, lineno, line))
+                if dc is not None:
+                    blocks.append((label, dc))
+                label = tokens[0]
                 dc = DispersionCurve()
                 dc.field = currentField
                 dc.tcp = currentTcp
-                while len(sline) == 3:
-                    # Each data line: nu_CPMG(Hz)  R2exp(1/s)  R2stddev(1/s)
-                    dc.v.append(float(sline[0]))
-                    dc.R2exp.append(float(sline[1]))
-                    dc.R2stddev.append(float(sline[2]))
-                    line = inFile.readline()
-                    if line:
-                        sline = line.split()
-                    else:
-                        sline = []
-                res.dspCurves.append(dc)
+                continue
+
+            if dc is None:
+                raise ValueError('%s:%d: expected a residue label line ("# <label>") but got: %r'
+                                 % (fileName, lineno, line))
+            tokens = line.split()
+            if len(tokens) != 3:
+                raise ValueError('%s:%d: data row needs 3 numbers (nu_cpmg, R2, sigma), got %d: %r'
+                                 % (fileName, lineno, len(tokens), line))
+            v = _number(tokens[0], fileName, lineno, 'nu_cpmg (Hz)')
+            r2 = _number(tokens[1], fileName, lineno, 'R2 (1/s)')
+            sd = _number(tokens[2], fileName, lineno, 'sigma (1/s)')
+            if v <= 0.0:
+                raise ValueError('%s:%d: nu_cpmg (Hz) must be > 0, got %r' % (fileName, lineno, tokens[0]))
+            if sd <= 0.0:
+                raise ValueError('%s:%d: sigma (1/s) must be > 0, got %r' % (fileName, lineno, tokens[2]))
+            dc.v.append(v)
+            dc.R2exp.append(r2)
+            dc.R2stddev.append(sd)
+        if dc is not None:
+            blocks.append((label, dc))
+
+        for resLabel, block in blocks:
+            # Find an existing Residue with this label, or create a new one
+            res = None
+            for r in self.rsds:
+                if r.label == resLabel:
+                    res = r
+                    break
+            if res is None:
+                res = Residue()
+                res.label = resLabel
+                self.rsds.append(res)
+            res.dspCurves.append(block)
+
+        self.fields.append(currentField)
+        self.tcps.append(currentTcp)
 
         # Discard any dispersion curves that ended up with no data points
         # (can happen when a residue label appears but has no following data)
         for r in self.rsds:
             r.dspCurves = [dc for dc in r.dspCurves if len(dc.v) > 0]
+        # Then drop residues left without any curve (label-only residues)
+        self.rsds = [r for r in self.rsds if r.dspCurves]
 
     # -------------------------------------------------------------------------
     # Model selection helpers
@@ -202,33 +246,31 @@ class CPMGDataSet:
         * alpha ~ 1–2  →  fast exchange
         * alpha ~ 0–1  →  slow exchange
 
-        Residues with flat dispersion curves, identical fields, or missing
-        curves at the required field indices are assigned alpha = 9999.
+        The low and high field curves of each residue are located by their
+        field value.  Residues lacking a curve at either extreme field, with
+        flat dispersion curves, or with identical fields are assigned
+        alpha = 9999.
         """
         if len(self.fields) <= 1:
             # Alpha calculation requires at least two field strengths
-            print('Two or more fields strengths are necessary for alpha calculation')
+            sys.stderr.write('Two or more fields strengths are necessary for alpha calculation\n')
             for r in self.rsds:
                 r.alpha = 9999.0
             return
 
-        # Identify the lowest and highest field indices
-        # First occurrence of the lowest / highest field (matches strict-< / strict-> scan)
-        B0_low_index = self.fields.index(min(self.fields))
-        B0_high_index = self.fields.index(max(self.fields))
+        B0_low = min(self.fields)
+        B0_high = max(self.fields)
 
         for r in self.rsds:
-            # Guard: residue must have dispersion curves at both field indices
-            if len(r.dspCurves) <= max(B0_low_index, B0_high_index):
+            low = next((dc for dc in r.dspCurves if dc.field == B0_low), None)
+            high = next((dc for dc in r.dspCurves if dc.field == B0_high), None)
+            if low is None or high is None:
                 r.alpha = 9999.0
                 continue
 
-            B0_low = r.dspCurves[B0_low_index].field
-            B0_high = r.dspCurves[B0_high_index].field
-
             # Rex estimate = max(R2) - min(R2) at each field
-            Rex_low  = max(r.dspCurves[B0_low_index].R2exp)  - min(r.dspCurves[B0_low_index].R2exp)
-            Rex_high = max(r.dspCurves[B0_high_index].R2exp) - min(r.dspCurves[B0_high_index].R2exp)
+            Rex_low  = max(low.R2exp)  - min(low.R2exp)
+            Rex_high = max(high.R2exp) - min(high.R2exp)
 
             # Guard: avoid division by zero for flat curves or identical fields
             field_diff = B0_high - B0_low
@@ -261,8 +303,8 @@ class CPMGDataSet:
         nFast = 0  # residues in fast exchange (1 < alpha < 2)
 
         if len(self.fields) <= 1:
-            print('Two or more fields strengths are necessary for alpha calculation')
-            print('Setting all alpha values to 9999')
+            sys.stderr.write('Two or more fields strengths are necessary for alpha calculation\n')
+            sys.stderr.write('Setting all alpha values to 9999\n')
             dict1['exchange'] = 'undefined'
             dict1['model'] = 'Matrix'
             return

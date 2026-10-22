@@ -1,4 +1,4 @@
-# ShereKhan 단계별 매뉴얼 — Individual vs Global fit + Jackknife 검증
+# ShereKhan 1.3.0 단계별 매뉴얼 — Individual vs Global fit + Jackknife 검증
 
 > 🌐 **한국어** · [English](MANUAL.en.md)
 
@@ -21,7 +21,7 @@ pip install .
 콘솔 스크립트 3개가 설치된다: `sk-synth`, `sk-prepare`, `sk-run`.
 설치 없이 실행하려면 `python sk_prepare.py ...`, `python sk_run.py ...` 형태로도 된다.
 
-요구사항: Python ≥ 3.8, `numpy`, `scipy`, `matplotlib`.
+요구사항: Python >= 3.9, `numpy`, `scipy`, `matplotlib` (`pip install -e .`는 pip >= 21.3 필요).
 
 ---
 
@@ -30,7 +30,7 @@ pip install .
 자기장(field)마다 파일 1개. 형식:
 
 ```
- 60.12                        # field (MHz, 1H Larmor)
+ 60.12                        # field: 관측 핵의 Larmor 주파수 (MHz), 예: 600 MHz의 15N은 60.8
 0.040000                      # tcp (s, CPMG 총 echo time)
 #nu_cpmg(Hz)  R2(1/s)  Esd(R2)
 # R1                          # 잔기 라벨
@@ -57,7 +57,7 @@ sk-prepare f60.dat f90.dat > run.conf
 - 잔기별 alpha 계산 → fast/slow 교환 체제 추정, 모델 제안(fast→Meiboom, slow→London, 애매→Matrix)
 - **`compare_aic: true`, `jackknife: true`를 기본으로 넣는다** (개별-전역 비교 + 잭나이프 활성)
 
-출력은 stdout JSON. 파일로 저장 후 다음 단계에서 검토.
+출력은 stdout의 config JSON (경고는 stderr). 파일로 저장 후 다음 단계에서 검토.
 
 ---
 
@@ -67,7 +67,7 @@ sk-prepare f60.dat f90.dat > run.conf
 
 | 필드 | 값 | 의미 |
 |------|-----|------|
-| `exchange` | `"fast"` / `"slow"` / `"undefined"` | 교환 체제; `"undefined"`는 항상 모델 `Matrix`와 짝. **애매한** 다중 필드 데이터(fast/slow 개수 동률) → 모든 잔기를 자동으로 `flag: "off"`로 둠(원하는 잔기만 수동으로 켬). **단일 필드** 데이터 → 마찬가지로 `"undefined"`/`Matrix`지만 모든 잔기는 `flag: "on"`으로 남음(alpha는 필드 ≥ 2 필요, 그래서 아무것도 끄지 않음) |
+| `exchange` | `"fast"` / `"slow"` / `"undefined"` | 교환 체제. `"undefined"`는 `Matrix` 또는 `London`으로 실행되며 `"slow"`처럼 보고된다. sk-prepare는 이때 `Matrix`를 제안. **애매한** 다중 필드 데이터(fast/slow 개수 동률) → 모든 잔기를 자동으로 `flag: "off"`로 둠(원하는 잔기만 수동으로 켬). **단일 필드** 데이터 → 마찬가지로 `"undefined"`/`Matrix`지만 모든 잔기는 `flag: "on"`으로 남음(alpha는 필드 ≥ 2 필요, 그래서 아무것도 끄지 않음) |
 | `model` | `"Meiboom"` / `"London"` / `"Matrix"` | 피팅 모델 (Matrix=정확, 느림) |
 | `init.mode` | `"guess"` / `"values"` | 초기값: 그리드 탐색 / 직접 지정 |
 | `residues[].flag` | `"on"` / `"off"` | 잔기 포함 여부 |
@@ -221,7 +221,7 @@ sk-run run.conf
 global fit이 아니라 **K개의 서로 다른 global fit**으로 이뤄졌을 수 있다(예: 잔기들이 kex≈600
 그룹과 kex≈1800 그룹으로 나뉨). 절차:
 
-**① 그룹 가설** — 잔기별 개별 fit kex(비교표의 `fit_kex`/individual `kex`)를 보고 뭉치는
+**① 그룹 가설** — 잔기별 개별 fit kex(비교표의 individual `kex`)를 보고 뭉치는
 값으로 잔기를 K개 그룹으로 나눈다.
 
 **② 그룹별 global fit** — 각 그룹만 `flag: on`으로 둔 config를 만들어 따로 실행:
@@ -276,6 +276,8 @@ individual   chi2=    87.57  AICc=   165.99
 - **마지막 `#####` 다음 줄이 잔기 결과 리스트** — 기존 파서 호환을 위해 항상 마지막.
   프로그램은 "마지막 `#####` 뒤 줄"을 읽어야 안전(`split('#####')[-1]`).
 - `compare_aic`/`jackknife`가 꺼져 있으면 해당 블록은 출력되지 않는다.
+- 이 블록들 앞에는 배너, 진행 줄(`--quiet`이면 생략), 로그 텍스트, `Calculations finished successfully.`가 나온다. 오류는 종료 코드 1과 stderr의 `sk-run: error: ...` 한 줄. [USAGE.md](USAGE.md#cli-레퍼런스) 참고.
+- `jackknife.per_residue[].influential`은 잔기별 boolean이다. `se > 0`이고 `|delta_kex| > 2*se`이면 `true`. 로그의 `*`와 같은 규칙이다.
 
 ---
 
@@ -329,3 +331,18 @@ bash demo/multi/run_multi.sh   # N개 individual (m1..m4), K개 global 그룹 (g
 | `n is not an integer` | tcp × nu_CPMG가 정수 아님. `.dat`의 tcp/주파수 확인. |
 | Matrix 모델이 느림 | 잭나이프는 N회 재적합. 큰 데이터는 Meiboom/London 또는 `init.mode: values`로 가속. |
 | 전체 individual인데 원인 불명 | §8 절차로 `z(kex)`/`chi2_glob` 큰 잔기 outlier 의심 → 제외 재검증. |
+
+---
+
+## 13. 알려진 한계
+
+- Matrix R2eff는 크기 `real(log(signal))`을 쓰므로 signal의 위상은 무시된다.
+- fit은 제약 없는 `leastsq`다. 파라미터 범위 제한이 없다.
+- 잔기별 AICc 판정은 휴리스틱이며 정식 검정이 아니다.
+- `z(kex)`는 individual fit SE로만 나눈다.
+- 전체 fit 값이 leave-one-out 평균과 같으면 잭나이프 `*` 표시는 나올 수 없다.
+- 유도 불확도(kex, pB, phi)가 이제 fit 공분산을 반영하므로 `phiStdDev`는 1.2.x와 조금 다르다.
+
+## 14. 인용
+
+Mazur A, Hammesfahr B, Griesinger C, Lee D, Kollmar M. ShereKhan, calculating exchange parameters in relaxation dispersion data from CPMG experiments. Bioinformatics 29(14):1819-1820, 2013. doi:10.1093/bioinformatics/btt286

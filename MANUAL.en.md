@@ -1,4 +1,4 @@
-# ShereKhan Step-by-Step Manual — Individual vs Global fit + Jackknife validation
+# ShereKhan 1.3.0 Step-by-Step Manual — Individual vs Global fit + Jackknife validation
 
 > 🌐 [한국어](MANUAL.ko.md) · **English**
 
@@ -22,7 +22,7 @@ pip install .
 Installs three console scripts: `sk-synth`, `sk-prepare`, `sk-run`.
 To run without installing, use `python sk_prepare.py ...`, `python sk_run.py ...`.
 
-Requirements: Python ≥ 3.8, `numpy`, `scipy`, `matplotlib`.
+Requirements: Python >= 3.9, `numpy`, `scipy`, `matplotlib` (pip >= 21.3 for `pip install -e .`).
 
 ---
 
@@ -31,7 +31,7 @@ Requirements: Python ≥ 3.8, `numpy`, `scipy`, `matplotlib`.
 One file per magnetic field. Format:
 
 ```
- 60.12                        # field (MHz, 1H Larmor)
+ 60.12                        # field: Larmor freq (MHz) of the observed nucleus, e.g. 60.8 for 15N at 600 MHz
 0.040000                      # tcp (s, total CPMG echo time)
 #nu_cpmg(Hz)  R2(1/s)  Esd(R2)
 # R1                          # residue label
@@ -61,7 +61,7 @@ What `sk-prepare` does:
 - **Sets `compare_aic: true` and `jackknife: true` by default** (per-residue comparison
   + jackknife enabled)
 
-Output is JSON on stdout. Save to a file and review it in the next step.
+Output is the config JSON on stdout (warnings go to stderr). Save to a file and review it in the next step.
 
 ---
 
@@ -71,7 +71,7 @@ Key fields:
 
 | Field | Value | Meaning |
 |-------|-------|---------|
-| `exchange` | `"fast"` / `"slow"` / `"undefined"` | exchange regime, always paired with model `Matrix` when `"undefined"`. **Ambiguous** multi-field data (equal fast/slow tally) → every residue auto-set `flag: "off"` (turn the ones you want on manually). **Single-field** data → also `"undefined"`/`Matrix` but every residue is left `flag: "on"` (alpha needs field ≥ 2, so nothing is disabled) |
+| `exchange` | `"fast"` / `"slow"` / `"undefined"` | exchange regime. `"undefined"` runs with `Matrix` or `London` and is reported like `"slow"`; sk-prepare suggests `Matrix` for it. **Ambiguous** multi-field data (equal fast/slow tally) → every residue auto-set `flag: "off"` (turn the ones you want on manually). **Single-field** data → also `"undefined"`/`Matrix` but every residue is left `flag: "on"` (alpha needs field ≥ 2, so nothing is disabled) |
 | `model` | `"Meiboom"` / `"London"` / `"Matrix"` | fitting model (Matrix = exact, slow) |
 | `init.mode` | `"guess"` / `"values"` | initial values: grid search / explicit |
 | `residues[].flag` | `"on"` / `"off"` | include the residue or not |
@@ -231,7 +231,7 @@ If exclusion does not restore global and **the fitted kex values cluster into a 
 the data may consist not of one global fit but of **K distinct global fits** (e.g. residues
 split into a kex≈600 group and a kex≈1800 group). Procedure:
 
-**① Group hypothesis** — from the per-residue individual fit kex (the `fit_kex`/individual
+**① Group hypothesis** — from the per-residue individual fit kex (the individual
 `kex` in the comparison table), split residues into K groups by clustering value.
 
 **② Per-group global fit** — build a config with only one group `flag: on` and run each separately:
@@ -288,6 +288,8 @@ Labelled JSON blocks on `sk-run` stdout:
 - **The line after the last `#####` is the residue-results list** — always last, for backward
   compatibility. Read "the line after the last `#####`" to be safe (`split('#####')[-1]`).
 - If `compare_aic`/`jackknife` are off, those blocks are not emitted.
+- Before these blocks stdout carries the banner, progress lines (hidden by `--quiet`), the log text and `Calculations finished successfully.` Errors give exit 1 and one `sk-run: error: ...` line on stderr; see [USAGE.en.md](USAGE.en.md#cli-reference).
+- `jackknife.per_residue[].influential` is a per-residue boolean: `true` when `se > 0` and `|delta_kex| > 2*se`. It's the same rule as the `*` in the log.
 
 ---
 
@@ -342,3 +344,18 @@ Heterogeneity diagnosis (when the whole dataset is individual):
 | `n is not an integer` | tcp × nu_CPMG is not an integer. Check the tcp/frequencies in the `.dat`. |
 | Matrix model is slow | Jackknife does N refits. For big data use Meiboom/London or `init.mode: values` to speed up. |
 | Whole dataset is individual, cause unclear | Use the §8 procedure: suspect residues with large `z(kex)`/`chi2_glob` as outliers → exclude and re-verify. |
+
+---
+
+## 13. Known limitations
+
+- Matrix R2eff uses the magnitude `real(log(signal))`, so a phase in the signal is ignored.
+- The fit is unbounded `leastsq`: there are no parameter bounds.
+- The per-residue AICc verdict is a heuristic, not a formal test.
+- `z(kex)` divides by the individual-fit SE only.
+- The jackknife `*` flag can't trigger when the full-fit value equals the mean of the leave-one-out values.
+- Derived uncertainties (kex, pB, phi) now propagate the fit covariance, so `phiStdDev` differs slightly from 1.2.x.
+
+## 14. Citation
+
+Mazur A, Hammesfahr B, Griesinger C, Lee D, Kollmar M. ShereKhan, calculating exchange parameters in relaxation dispersion data from CPMG experiments. Bioinformatics 29(14):1819-1820, 2013. doi:10.1093/bioinformatics/btt286

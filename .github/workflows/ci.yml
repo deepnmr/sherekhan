@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.12"]
+        python-version: ["3.9", "3.11", "3.12", "3.13", "3.14"]
     env:
       MPLBACKEND: Agg  # headless: matplotlib writes PDFs without a display
     steps:
@@ -19,8 +19,25 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install .
-      - name: Parser unit test
-        run: python3 test/test_parse.py
+      - run: python -m pip install -U pip
+      - run: pip install -e ".[test]"
+      - name: Unit tests
+        run: python -m pytest -q
       - name: Integration tests
         run: bash test/run_tests.sh
+  build:
+    runs-on: ubuntu-latest
+    env:
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - name: Build wheel and sdist
+        run: python -m build
+      - name: Install wheel and run CLI
+        run: |
+          pip install dist/*.whl
+          cd /tmp && sk-run --version

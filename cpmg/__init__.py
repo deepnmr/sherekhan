@@ -16,7 +16,11 @@ It supports three exchange models:
 Modules
 -------
 cpmg          : Data containers (DispersionCurve, Residue, CPMGDataSet)
-model_2state  : Fitting engine and R2 calculation models (CPMG_model)
+models        : R2 calculation formulas (Matrix, London, Meiboom)
+fitting       : Parameter packing and the leastsq fitting engine
+analysis      : Individual fits, AICc model comparison, jackknife, Meiboom conversion
+report        : Log, PDF and JSON report generation
+model_2state  : CPMG_model facade delegating to the modules above
 
 Authors
 -------
@@ -31,4 +35,4 @@ Max-Planck-Institute for Biophysical Chemistry, Goettingen, 2012
 Copyright (c) 2025-2026 Prof. Dr. Donghan Lee, Korea Basic Science Institute (KBSI)
 """
 
-__version__ = '1.2.1'
+__version__ = '1.3.0'
