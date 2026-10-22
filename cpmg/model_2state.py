@@ -37,7 +37,7 @@ use('Agg')  # non-interactive backend — must be set before importing pyplot
 
 import platform
 import numpy as np
-from numpy import array, sqrt, pi, dot, real, log, sin, sinh, cos, cosh, exp, zeros, sort, tanh
+from numpy import array, sqrt, pi, dot, real, log, sin, sinh, cos, cosh, exp, zeros, sort, tanh, isfinite
 from scipy.optimize import leastsq
 from matplotlib.pyplot import plot, errorbar, figure, title, legend, xlabel, ylabel, grid, xlim, ylim, close, \
     subplot
@@ -64,6 +64,17 @@ def _echo_count(tcp, vCPMG):
         raise ValueError('tcp*nu_cpmg = %g is not a positive integer number of CPMG '
                          'cycles (tcp=%g s, nu=%g Hz)' % (fn, tcp, vCPMG))
     return n
+
+
+def _london_cr72(kAB, kBA, domega, R2_0, nu):
+    """Infinite-train (Carver-Richards 1972) R2eff for a London point whose closed form is non-finite."""
+    if domega == 0 or kAB == 0:
+        return R2_0
+    d = 1.0 / (4.0 * nu)
+    A = array([[-kAB, kBA], [kAB, -kBA + 1.0j * domega]])
+    B = dot(dot(expm(A * d), expm(A.conj() * 2.0 * d)), expm(A * d))
+    rho = max(abs(np.linalg.eigvals(B)))
+    return R2_0 - nu * log(rho)
 
 
 class CPMG_model:
@@ -226,6 +237,8 @@ class CPMG_model:
         """
         delta = 1.0 / (4.0 * vCPMG)   # time for one quarter-echo interval
         n = _echo_count(tcp, vCPMG)    # number of CPMG repeats (integer)
+        if kAB == 0 or kAB + kBA == 0 or domega == 0:
+            return R2_0                # no exchange or no chemical shift: no R2 contribution
 
         # Build the Liouvillian matrix A for state A (real) and state B (complex)
         Alist = [[-R2_0 - kAB, kBA],
@@ -275,6 +288,9 @@ class CPMG_model:
         delta = 1.0 / (4.0 * vCPMG)
         n = _echo_count(tcp, vCPMG)
 
+        if kAB == 0 or kAB + kBA == 0 or domega == 0:
+            return R2_0
+
         # Analytic square-root factor appearing in both eigenvalues
         AA = sqrt(kBA ** 2 + (2.0 * kAB - 2.0 * 1.0j * domega) * kBA
                   + kAB ** 2 + 2.0 * 1.0j * domega * kAB - domega ** 2)
@@ -314,6 +330,8 @@ class CPMG_model:
         MT = dot(C, M0)
 
         R2_clc = (-1.0 / (4.0 * n * delta)) * log(MT[0] / M0[0])
+        if not np.isfinite(R2_clc):
+            return self.R2_clc_matrix(kAB, kBA, domega, R2_0, vCPMG, tcp)
 
         return real(R2_clc)
 
@@ -355,6 +373,8 @@ class CPMG_model:
                                    + sqrt(Dp * sinh(np) ** 2 + Dm * sin(nm) ** 2)))
 
         R2_clc = R2_0 + Rex
+        if not isfinite(R2_clc):
+            return _london_cr72(kAB, kBA, domega, R2_0, vCPMG)
         return R2_clc
 
     def R2_clc_meiboom(self, kex, phi, R2_0, vCPMG, field):
@@ -378,9 +398,17 @@ class CPMG_model:
         Returns:
             float: Calculated effective R2 relaxation rate (s^-1).
         """
+        if kex == 0:
+            return R2_0
         # Convert phi from ppm^2 to rad^2/s^2 at this magnetic field
         phi_omega = phi * (2.0 * pi * field) ** 2
-        Rex = (phi_omega / kex) * (1.0 - (4.0 * vCPMG / kex) * tanh(kex / (4.0 * vCPMG)))
+        x = kex / (4.0 * vCPMG)
+        if abs(x) < 1e-3:
+            # Series of the same expression; avoids cancellation at small kex/(4 nu)
+            Rex = phi_omega * kex / (48.0 * vCPMG ** 2) * (1.0 - 2.0 * x ** 2 / 5.0 + 17.0 * x ** 4 / 105.0
+                                                           - 62.0 * x ** 6 / 945.0)
+        else:
+            Rex = (phi_omega / kex) * (1.0 - (4.0 * vCPMG / kex) * tanh(kex / (4.0 * vCPMG)))
         R2_clc = R2_0 + Rex
         return R2_clc
 
@@ -506,6 +534,22 @@ class CPMG_model:
         domega = np.asarray(domega_arr, dtype=float)      # (C,)
         R2_0   = np.asarray(R2_0_arr,   dtype=float)       # (C,)
         C = domega.shape[0]
+        V = v_array.shape[0]
+
+        # No exchange, or no exchange-free denominator: no R2 contribution.
+        if kAB == 0 or kAB + kBA == 0:
+            return np.repeat(R2_0[:, None], V, axis=1)
+
+        # Curves without chemical shift difference: R2_0, no eigenvectors needed.
+        zero_dw = domega == 0
+        if np.any(zero_dw):
+            out = np.empty((C, V))
+            out[zero_dw] = R2_0[zero_dw][:, None]
+            nz = ~zero_dw
+            if np.any(nz):
+                out[nz] = self.R2_clc_matrix2_batch(
+                    kAB, kBA, domega[nz], R2_0[nz], v_array, delta_arr, n_arr, tcp)
+            return out
 
         # --- Per-curve scalar quantities (independent of vCPMG) ---
         AA = np.sqrt(kBA ** 2 + (2.0 * kAB - 2.0j * domega) * kBA
@@ -531,8 +575,8 @@ class CPMG_model:
                     kAB, kBA, domega[good], R2_0[good],
                     v_array, delta_arr, n_arr, tcp)
             for ci in np.nonzero(bad)[0]:
-                out[ci] = [self.R2_clc_matrix2(kAB, kBA, domega[ci], R2_0[ci],
-                                               v, tcp) for v in v_array]
+                out[ci] = [self.R2_clc_matrix(kAB, kBA, domega[ci], R2_0[ci],
+                                              v, tcp) for v in v_array]
             return out
 
         # Eigenvector matrices X and their inverse Xi, per curve — shape (C,2,2)
@@ -576,8 +620,8 @@ class CPMG_model:
         denom = lb1 - lb2
         if np.any(np.abs(denom) < 1e-14):
             # Repeated eigenvalue somewhere — fall back per curve for safety
-            return np.array([[self.R2_clc_matrix2(kAB, kBA, domega[ci], R2_0[ci],
-                                                  v, tcp) for v in v_array]
+            return np.array([[self.R2_clc_matrix(kAB, kBA, domega[ci], R2_0[ci],
+                                                 v, tcp) for v in v_array]
                              for ci in range(C)])
         lb1_n = lb1 ** n_arr[None, :]
         lb2_n = lb2 ** n_arr[None, :]
@@ -593,7 +637,10 @@ class CPMG_model:
         MT0  = Cm[:, :, 0, :] @ M0                            # (C, V)
 
         R2 = (-1.0 / (4.0 * n_arr[None, :] * delta_arr[None, :])) * np.log(MT0 / M0_0)
-        return np.real(R2)
+        out = np.real(R2)
+        for ci, vi in zip(*np.nonzero(~np.isfinite(out))):
+            out[ci, vi] = self.R2_clc_matrix(kAB, kBA, domega[ci], R2_0[ci], v_array[vi], tcp)
+        return out
 
     def R2_clc_london_vec(self, kAB, kBA, domega, R2_0, v_array):
         """Vectorised R2eff using the London slow-exchange approximation.
@@ -625,7 +672,10 @@ class CPMG_model:
                - (1.0 / tcp) * np.log(
                    np.sqrt(Dp * np.cosh(eta_p) ** 2 - Dm * np.cos(eta_m) ** 2)
                    + np.sqrt(Dp * np.sinh(eta_p) ** 2 + Dm * np.sin(eta_m) ** 2)))
-        return R2_0 + Rex
+        out = R2_0 + Rex
+        for i in np.nonzero(~np.isfinite(out))[0]:
+            out[i] = _london_cr72(kAB, kBA, domega, R2_0, v_array[i])
+        return out
 
     def R2_clc_meiboom_vec(self, kex, phi, R2_0, v_array, field):
         """Vectorised R2eff using the Meiboom fast-exchange approximation.
@@ -640,8 +690,16 @@ class CPMG_model:
         Returns:
             np.ndarray: Real R2eff values, shape (n_v,).
         """
+        if kex == 0:
+            return R2_0 + np.zeros_like(v_array, dtype=float)
         phi_omega = phi * (2.0 * pi * field) ** 2
-        Rex = (phi_omega / kex) * (1.0 - (4.0 * v_array / kex) * np.tanh(kex / (4.0 * v_array)))
+        x = kex / (4.0 * v_array)
+        Rex = (phi_omega / kex) * (1.0 - (4.0 * v_array / kex) * np.tanh(x))
+        small = np.abs(x) < 1e-3
+        if np.any(small):
+            series = (phi_omega * kex / (48.0 * v_array ** 2)
+                      * (1.0 - 2.0 * x ** 2 / 5.0 + 17.0 * x ** 4 / 105.0 - 62.0 * x ** 6 / 945.0))
+            Rex = np.where(small, series, Rex)
         return R2_0 + Rex
 
     def _calc_r2(self, r, dspCurve, R2_0, v_array):

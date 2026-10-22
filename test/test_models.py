@@ -162,6 +162,79 @@ def test_no_process_exit_from_library():
                                                     'cpmg', 'model_2state.py')).read()) is None
 
 
+def test_matrix_singular_cases_return_r2_0():
+    m = CPMG_model()
+    assert m.R2_clc_matrix(0., 1000., 1000., 10., 100., .04) == 10.
+    assert m.R2_clc_matrix2(0., 1000., 1000., 10., 100., .04) == 10.
+    assert m.R2_clc_matrix(0., 0., 1000., 10., 100., .04) == 10.
+    assert m.R2_clc_matrix(20., 1000., 0., 10., 100., .04) == 10.
+
+
+def test_matrix_nonfinite_eigen_point_falls_back_to_expm():
+    m = CPMG_model()
+    expected = 172.27349206218813
+    assert abs(m.R2_clc_matrix(500., 500., 1000., 10., 100., .04) - expected) < 1e-9
+    assert abs(m.R2_clc_matrix2(500., 500., 1000., 10., 100., .04) - expected) < 1e-9
+    bat = m.R2_clc_matrix2_batch(500., 500., np.array([1000.]), np.array([10.]),
+                                 np.array([100.]), np.array([1. / 400]), np.array([4]), .04)
+    assert abs(bat[0, 0] - expected) < 1e-9, bat
+
+
+def test_matrix_batch_singular_rows_return_r2_0_without_warnings():
+    import warnings
+    m = CPMG_model()
+    v = np.arange(50, 1001, 50, dtype=float)
+    tcp = .04
+    n_arr = np.round(tcp * v).astype(int)
+    delta = 1.0 / (4.0 * v)
+    dw_n, r20_n = 3 * 2 * np.pi * 60.1, 20.
+    domega = np.array([dw_n, 0.0])          # row 1 has no chemical shift difference
+    R2_0 = np.array([r20_n, 7.5])
+    cases = ((0., 1000.), (20., -20.))      # kAB == 0 and kAB + kBA == 0
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', RuntimeWarning)
+        for kAB, kBA in cases:
+            out = m.R2_clc_matrix2_batch(kAB, kBA, domega, R2_0, v, delta, n_arr, tcp)
+            assert out.shape == (2, len(v))
+            assert np.all(out[0] == r20_n), out[0]
+            assert np.all(out[1] == 7.5), out[1]
+        # Normal row with a dw=0 row alongside: normal row matches the scalar path
+        out = m.R2_clc_matrix2_batch(20., 1000., domega, R2_0, v, delta, n_arr, tcp)
+    scal = np.array([m.R2_clc_matrix(20., 1000., dw_n, r20_n, vi, tcp) for vi in v])
+    assert np.max(np.abs(out[0] - scal)) < 1e-10, np.max(np.abs(out[0] - scal))
+    assert np.all(out[1] == 7.5), out[1]
+
+
+def test_london_nonfinite_points_use_cr72_spectral_radius():
+    m = CPMG_model()
+    assert abs(m.R2_clc_london(50000., 950000., 1000., 10., 25.) - 10.047495213750) < 1e-6
+    assert abs(m.R2_clc_london(500., 500., 1000., 10., 100.) - 180.553770725781) < 1e-6
+    v = np.arange(50, 1001, 50, dtype=float)
+    dw = 3 * 2 * np.pi * 60.1
+    scal = np.array([m.R2_clc_london(20., 1000., dw, 20., x) for x in v])
+    vec = m.R2_clc_london_vec(20., 1000., dw, 20., v)
+    assert np.max(np.abs(scal - vec)) < 1e-12
+
+
+def test_meiboom_zero_and_small_kex_limits():
+    m = CPMG_model()
+    assert m.R2_clc_meiboom(0., 1., 10., 100., 100.) == 10.
+    assert abs(m.R2_clc_meiboom(1e-4, 1., 10., 100., 100.) - 10.000082246703343) < 1e-10
+    assert abs(m.R2_clc_meiboom(1e-6, 1., 10., 100., 100.) - 10.000000822467033) < 1e-12
+    vec = m.R2_clc_meiboom_vec(1e-4, 1., 10., np.array([100.]), 100.)
+    assert abs(vec[0] - 10.000082246703343) < 1e-10
+
+
+def test_meiboom_fast_limit_agrees_with_matrix():
+    m = CPMG_model()
+    kex, dw, r20, nu, field = 1e6, 1000., 10., 100., 100.
+    pB = .05
+    csd = dw / (2 * np.pi * field)
+    mat = m.R2_clc_matrix(pB * kex, (1 - pB) * kex, dw, r20, nu, .04)
+    mei = m.R2_clc_meiboom(kex, pB * (1 - pB) * csd ** 2, r20, nu, field)
+    assert abs(mat - mei) < 1e-5, (mat, mei)
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     for t in tests:
