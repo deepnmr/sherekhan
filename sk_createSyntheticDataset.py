@@ -50,12 +50,26 @@ from cpmg.model_2state import CPMG_model
 from numpy.random import randn
 
 
+class _UsageParser(argparse.ArgumentParser):
+    """ArgumentParser that reports usage errors as one stderr line."""
+
+    def error(self, message):
+        self.exit(2, '%s: error: %s (use -h for help)\n' % (self.prog, message))
+
+
+def _seed(text):
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError('must be >= 0 (got %d)' % value)
+    return value
+
+
 def main():
     """Generate synthetic fast-exchange CPMG .dat files (one per field)."""
-    parser = argparse.ArgumentParser(
+    parser = _UsageParser(
         prog='sk-synth',
         description='Generate synthetic fast-exchange CPMG .dat files (synth-60.dat, synth-90.dat).')
-    parser.add_argument('--seed', type=int, default=None,
+    parser.add_argument('--seed', type=_seed, default=None,
                         help='seed for reproducible noise (default: unseeded)')
     parser.add_argument('--outdir', default='.', metavar='DIR',
                         help='directory for the .dat files (created if missing; default: current directory)')
@@ -92,7 +106,11 @@ def main():
 
     # Seeded generator gives byte-identical output; unseeded keeps the legacy global RNG
     draw = randn if args.seed is None else np.random.default_rng(args.seed).standard_normal
-    os.makedirs(args.outdir, exist_ok=True)
+    try:
+        os.makedirs(args.outdir, exist_ok=True)
+    except OSError as exc:
+        stderr.write('sk-synth: error: %s: %s\n' % (exc.filename, exc.strerror))
+        raise SystemExit(1)
 
     # -----------------------------------------------------------------------
     # Generate and write one .dat file per magnetic field
@@ -127,8 +145,13 @@ def main():
                 buff += '%8.3f %8.3f %8.3f\n' % (v, r2eff, r2effStd)
 
         # Write the .dat file; filename encodes the field in MHz (integer)
-        with open(os.path.join(args.outdir, 'synth-%d.dat' % int(field)), 'w') as file1:
-            file1.write(buff)
+        outPath = os.path.join(args.outdir, 'synth-%d.dat' % int(field))
+        try:
+            with open(outPath, 'w') as file1:
+                file1.write(buff)
+        except OSError as exc:
+            stderr.write('sk-synth: error: %s: %s\n' % (exc.filename, exc.strerror))
+            raise SystemExit(1)
 
     stderr.write('Done.\n')
 

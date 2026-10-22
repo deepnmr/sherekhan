@@ -92,6 +92,41 @@ def test_invalid_configs_give_one_line_error():
             assert 'Traceback' not in combined, (label, combined)
 
 
+def test_overflowing_number_is_invalid_config():
+    huge = int('1' + '0' * 400)
+    conf = _base_conf(init={'mode': 'values', 'kex': huge, 'pB': 0.05, 'csd': 1.0})
+    with tempfile.TemporaryDirectory() as d:
+        path = _write_conf(d, conf)
+        r = _run([path], d)
+        assert r.returncode == 1, (r.returncode, r.stderr)
+        assert r.stderr.count('\n') == 1, r.stderr
+        assert '"init.kex"' in r.stderr, r.stderr
+        assert 'Traceback' not in r.stdout + r.stderr
+
+
+def test_missing_output_directory_fails_before_fitting():
+    conf = _base_conf(**{'Project Name': 'no_such_dir/run'})
+    with tempfile.TemporaryDirectory() as d:
+        path = _write_conf(d, conf)
+        r = _run([path], d)
+        assert r.returncode == 1, (r.returncode, r.stderr)
+        assert r.stderr.count('\n') == 1, r.stderr
+        assert 'output directory does not exist' in r.stderr, r.stderr
+        assert 'chi2' not in r.stdout and 'red_chi2=' not in r.stdout
+        assert os.listdir(d) == ['run.conf'], os.listdir(d)
+
+
+def test_usage_error_is_one_stderr_line():
+    with tempfile.TemporaryDirectory() as d:
+        r = _run(['--bogus'], d)
+        assert r.returncode == 2, r.returncode
+        lines = [ln for ln in r.stderr.splitlines() if ln]
+        assert len(lines) == 1, r.stderr
+        assert lines[0].startswith('sk-run: error: '), lines[0]
+        assert lines[0].endswith('(use -h for help)'), lines[0]
+        assert 'Traceback' not in r.stderr
+
+
 def test_relative_datasets_resolve_from_config_dir():
     with tempfile.TemporaryDirectory() as cfg_dir, tempfile.TemporaryDirectory() as cwd:
         rel = os.path.relpath(DATA, os.path.realpath(cfg_dir))

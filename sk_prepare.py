@@ -41,9 +41,16 @@ from cpmg import __version__
 from cpmg.model_2state import CPMG_model
 
 
+class _UsageParser(argparse.ArgumentParser):
+    """ArgumentParser that reports usage errors as one stderr line."""
+
+    def error(self, message):
+        self.exit(2, '%s: error: %s (use -h for help)\n' % (self.prog, message))
+
+
 def main():
     """Build a ShereKhan JSON config from .dat files passed on the command line."""
-    parser = argparse.ArgumentParser(
+    parser = _UsageParser(
         prog='sk-prepare',
         description='Build a ShereKhan JSON config (written to stdout) from CPMG .dat files, one per field.')
     parser.add_argument('datfiles', nargs='+', metavar='DAT', help='CPMG .dat file (one per magnetic field)')
@@ -52,7 +59,10 @@ def main():
 
     try:
         return _build_config(args.datfiles)
-    except (FileNotFoundError, ValueError) as exc:
+    except OSError as exc:
+        stderr.write('sk-prepare: error: %s: %s\n' % (exc.filename, exc.strerror))
+        raise SystemExit(1)
+    except ValueError as exc:
         stderr.write('sk-prepare: error: %s\n' % exc)
         raise SystemExit(1)
 

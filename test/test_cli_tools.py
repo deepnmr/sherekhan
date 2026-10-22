@@ -108,6 +108,34 @@ def test_synth_seed_is_reproducible_and_outdir_is_created():
         assert sorted(os.listdir(d1)) == ['synth-60.dat', 'synth-90.dat']
 
 
+def test_prepare_directory_argument_is_clean_error():
+    with tempfile.TemporaryDirectory() as d:
+        p = run(PREPARE, [d], d)
+        assert_clean_error(p)
+        assert len([ln for ln in p.stderr.splitlines() if ln]) == 1, p.stderr
+
+
+def test_synth_negative_seed_is_one_line_usage_error():
+    with tempfile.TemporaryDirectory() as d:
+        p = run(SYNTH, ['--seed', '-1', '--outdir', d], d)
+        assert p.returncode == 2, p.stderr
+        lines = [ln for ln in p.stderr.splitlines() if ln]
+        assert len(lines) == 1 and lines[0].startswith('sk-synth: error: '), p.stderr
+        assert 'Traceback' not in p.stderr
+        assert os.listdir(d) == [], os.listdir(d)
+
+
+def test_synth_outdir_that_is_a_file_is_clean_error():
+    with tempfile.TemporaryDirectory() as d:
+        blocker = os.path.join(d, 'blocker')
+        open(blocker, 'w').close()
+        p = run(SYNTH, ['--seed', '1', '--outdir', blocker], d)
+        assert p.returncode == 1, p.stderr
+        lines = [ln for ln in p.stderr.splitlines() if ln]
+        assert len(lines) == 1 and lines[0].startswith('sk-synth: error: '), p.stderr
+        assert 'Traceback' not in p.stdout + p.stderr
+
+
 def test_synth_then_prepare_round_trip():
     with tempfile.TemporaryDirectory() as d:
         assert run(SYNTH, ['--seed', '2', '--outdir', d], d).returncode == 0

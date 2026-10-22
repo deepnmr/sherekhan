@@ -88,7 +88,12 @@ def _finite_json(obj):
 
 
 def _is_number(x):
-    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(x))
+    except OverflowError:
+        return False
 
 
 def _check_config(conf, path):
@@ -173,6 +178,10 @@ def run(config_path, quiet):
             raise ValueError('config %s: invalid JSON: %s' % (config_path, exc))
     _check_config(conf, config_path)
     conf_dir = os.path.dirname(os.path.abspath(config_path))
+
+    logDir = os.path.dirname(conf['Project Name'] + '.log') or '.'
+    if not os.path.isdir(logDir):
+        raise ValueError('output directory does not exist: %s' % logDir)
 
     # -----------------------------------------------------------------------
     # Initialise the fitting model and print the program banner
@@ -346,9 +355,16 @@ def run(config_path, quiet):
     print(_finite_json(out))
 
 
+class _UsageParser(argparse.ArgumentParser):
+    """ArgumentParser that reports usage errors as one stderr line."""
+
+    def error(self, message):
+        self.exit(2, '%s: error: %s (use -h for help)\n' % (self.prog, message))
+
+
 def main(argv=None):
     """Command-line entry point: parse options, run, and map input errors to exit 1."""
-    parser = argparse.ArgumentParser(
+    parser = _UsageParser(
         prog='sk-run',
         description='Run a ShereKhan CPMG relaxation-dispersion fit from a JSON config.')
     parser.add_argument('config', help='JSON run configuration file (e.g. run.conf)')
