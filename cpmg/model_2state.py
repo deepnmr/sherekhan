@@ -202,7 +202,7 @@ class CPMG_model:
         return report.jackknife_report(jk)
 
     def aicReport(self, cmp):
-        return report.aic_report(self, cmp)
+        return report.aic_report(self.model, cmp)
 
     def _build_grid_p0(self, kex_val, pB_val, csd_val):
         return fitting.build_grid_p0(self, kex_val, pB_val, csd_val)

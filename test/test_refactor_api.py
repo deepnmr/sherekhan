@@ -33,6 +33,8 @@ PUBLIC_AND_PRIVATE = [
     'jackknifeReport', 'aicReport',
 ]
 
+N_SETS = 20
+
 
 def test_names_exist_on_facade():
     missing = [n for n in PUBLIC_AND_PRIVATE if not hasattr(CPMG_model, n)]
@@ -83,6 +85,35 @@ def test_aic_and_derived_std_exact():
     assert abs(phi_std - 0.057083237470) < 1e-10
 
 
+def test_derived_std_bit_exact():
+    # float.hex values recorded at the pre-change commit c856545.
+    cases = [
+        (100., 900., 2., np.array([[100., -180., .3], [-180., 400., -.6], [.3, -.6, .01]]),
+         ['0x1.7aa10d193c22dp+3', '0x1.630ba45343435p-7', '0x1.d3a039c29a407p-5']),
+        (50., 950., 1.5, np.diag([4., 9., 0.01]),
+         ['0x1.cd82b446159f3p+1', '0x1.f39f94597965dp-10', '0x1.e3c4630d8510fp-7']),
+        (300., 700., -0.4, np.array([[30., 5., .1], [5., 20., -.2], [.1, -.2, .04]]),
+         ['0x1.efbdeb14f4edap+2', '0x1.f1621dea44742p-9', '0x1.12eadac49beadp-5']),
+    ]
+    for kAB, kBA, dd, C, want in cases:
+        got = [float(x).hex() for x in _derived_std(kAB, kBA, dd, C)]
+        assert got == want, (got, want)
+
+
+def test_aic_report_takes_model_name():
+    per = [{'label': 'A1', 'kex': 100., 'pB': .05, 'dd': 2., 'phi': .5, 'chi2': 1., 'chi2_global': 2.,
+            'delta_aicc': -1., 'z_kex': 0.5, 'preferred': 'individual'}]
+    cmp = {'global': {'chi2': 3., 'k': 3, 'n': 10, 'aic': 9., 'aicc': 10.},
+           'individual': {'chi2': 1., 'k': 4, 'n': 10, 'aic': 7., 'aicc': 8.},
+           'delta_aic': -2., 'delta_aicc': -2., 'weight_global': .3, 'weight_individual': .7,
+           'preferred': 'individual', 'per_residue': per,
+           'n_pref_global': 0, 'n_pref_individual': 1}
+    m = CPMG_model()
+    m.model = 'Matrix'
+    assert m.aicReport(cmp) == report.aic_report('Matrix', cmp)
+    assert report.aic_report('Meiboom', cmp) != report.aic_report('Matrix', cmp)
+
+
 def test_import_does_not_load_matplotlib():
     out = subprocess.run(
         [sys.executable, '-c',
@@ -92,61 +123,53 @@ def test_import_does_not_load_matplotlib():
     assert out.stdout.strip() == 'False', out.stdout
 
 
-def _cases():
-    """Parameter sets: normal values plus the todo-8 edge cases."""
-    m = CPMG_model()
-    out = []
-    for kAB, kBA, dw, r20, nu, tcp in [
-        (20., 1000., 3 * 2 * np.pi * 60.1, 20., 100., .04),
-        (200., 800., 1000., 15., 300., .04),
-        (500., 500., 1000., 10., 100., .04),
-        (0., 1000., 1000., 10., 100., .04),
-        (20., 1000., 0., 10., 100., .04),
-        (50., 950., 2000., 12., 50., .04),
-    ]:
-        out.append(('matrix', (kAB, kBA, dw, r20, nu, tcp)))
-    for kAB, kBA, dw, r20, nu in [
-        (50000., 950000., 1000., 10., 25.),
-        (500., 500., 1000., 10., 100.),
-        (20., 1000., 3 * 2 * np.pi * 60.1, 20., 100.),
-    ]:
-        out.append(('london', (kAB, kBA, dw, r20, nu)))
-    for kex, phi, r20, nu, field in [
-        (0., 1., 10., 100., 100.),
-        (1e-4, 1., 10., 100., 100.),
-        (1e-6, 1., 10., 100., 100.),
-        (100., 0.5, 12., 200., 60.),
-    ]:
-        out.append(('meiboom', (kex, phi, r20, nu, field)))
-    assert m is not None
-    return out
+def _same(a, b):
+    return np.array_equal(np.asarray(a), np.asarray(b), equal_nan=True)
+
+
+def _random_sets(seed):
+    """Deterministic parameter sets: normal range plus singular-prone corners.
+
+    tcp*nu is an integer for every nu, so the echo-count check always passes.
+    """
+    rng = np.random.default_rng(seed)
+    sets = []
+    for _ in range(N_SETS):
+        kAB = rng.uniform(0., 2000.)
+        kBA = rng.uniform(0., 2000.)
+        dw = rng.uniform(0., 5000.)
+        R20 = rng.uniform(1., 30.)
+        nu = 25. * rng.integers(1, 41)
+        sets.append((kAB, kBA, dw, R20, nu, .04))
+    return sets
 
 
 def test_facade_equals_module_exactly():
     m = CPMG_model()
     v = np.array([50., 100., 200., 400., 600., 800., 1000.])
-    for kind, args in _cases():
-        if kind == 'matrix':
-            kAB, kBA, dw, r20, nu, tcp = args
-            assert m.R2_clc_matrix(*args) == models.r2_matrix(*args)
-            assert m.R2_clc_matrix2(*args) == models.r2_matrix_eig(*args)
-            dwa = np.array([dw, dw * 0.5])
-            r2a = np.array([r20, r20 + 1.0])
-            got = m.R2_clc_matrix2_batch(kAB, kBA, dwa, r2a, v, 1.0 / (4.0 * v),
-                                         np.round(tcp * v).astype(int), tcp)
-            want = models.r2_matrix_eig_batch(kAB, kBA, dwa, r2a, v, 1.0 / (4.0 * v),
-                                              np.round(tcp * v).astype(int), tcp)
-            assert np.array_equal(got, want)
-        elif kind == 'london':
-            assert m.R2_clc_london(*args) == models.r2_london(*args)
-            kAB, kBA, dw, r20, nu = args
-            assert np.array_equal(m.R2_clc_london_vec(kAB, kBA, dw, r20, v),
-                                  models.r2_london_vec(kAB, kBA, dw, r20, v))
-        else:
-            assert m.R2_clc_meiboom(*args) == models.r2_meiboom(*args)
-            kex, phi, r20, nu, field = args
-            assert np.array_equal(m.R2_clc_meiboom_vec(kex, phi, r20, v, field),
-                                  models.r2_meiboom_vec(kex, phi, r20, v, field))
+    delta = 1.0 / (4.0 * v)
+    n_arr = np.round(.04 * v).astype(int)
+    sets = _random_sets(20)
+    sets += [(500., 500., 1000., 10., 100., .04), (0., 1000., 1000., 10., 100., .04),
+             (20., 1000., 0., 10., 100., .04), (1000., 0., 1000., 10., 100., .04)]
+    assert len(sets) >= N_SETS
+    for kAB, kBA, dw, R20, nu, tcp in sets:
+        assert _same(m.R2_clc_matrix(kAB, kBA, dw, R20, nu, tcp),
+                     models.r2_matrix(kAB, kBA, dw, R20, nu, tcp))
+        assert _same(m.R2_clc_matrix2(kAB, kBA, dw, R20, nu, tcp),
+                     models.r2_matrix_eig(kAB, kBA, dw, R20, nu, tcp))
+        dwa = np.array([dw, dw * 0.5])
+        r2a = np.array([R20, R20 + 1.0])
+        assert _same(m.R2_clc_matrix2_batch(kAB, kBA, dwa, r2a, v, delta, n_arr, tcp),
+                     models.r2_matrix_eig_batch(kAB, kBA, dwa, r2a, v, delta, n_arr, tcp))
+        assert _same(m.R2_clc_london(kAB, kBA, dw, R20, nu),
+                     models.r2_london(kAB, kBA, dw, R20, nu))
+        assert _same(m.R2_clc_london_vec(kAB, kBA, dw, R20, v),
+                     models.r2_london_vec(kAB, kBA, dw, R20, v))
+        assert _same(m.R2_clc_meiboom(kAB, dw / 1000., R20, nu, 100.),
+                     models.r2_meiboom(kAB, dw / 1000., R20, nu, 100.))
+        assert _same(m.R2_clc_meiboom_vec(kAB, dw / 1000., R20, v, 100.),
+                     models.r2_meiboom_vec(kAB, dw / 1000., R20, v, 100.))
 
 
 def test_edge_values_unchanged():
@@ -163,6 +186,8 @@ if __name__ == '__main__':
     test_report_facade_delegates()
     test_analysis_facade_delegates()
     test_aic_and_derived_std_exact()
+    test_derived_std_bit_exact()
+    test_aic_report_takes_model_name()
     test_import_does_not_load_matplotlib()
     test_facade_equals_module_exactly()
     test_edge_values_unchanged()

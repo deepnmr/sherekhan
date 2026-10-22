@@ -252,10 +252,11 @@ def report_all_values(m):
     return all_data
 
 
-def aic_report(m, cmp):
+def aic_report(model_name, cmp):
     """Format the AIC model-comparison result as a text block.
 
     Args:
+        model_name (str): 'Matrix', 'London' or 'Meiboom' (selects the column layout).
         cmp (dict): the dict returned by compareModelsAIC().
 
     Returns:
@@ -280,7 +281,7 @@ def aic_report(m, cmp):
     buf += 'Preferred model (whole dataset): %s\n' % cmp['preferred']
     buf += '---\n'
     buf += 'Per-residue individual fit:\n'
-    if m.model == 'Meiboom':
+    if model_name == 'Meiboom':
         buf += '%6s %10s %12s %10s\n' % ('resId', 'kex', 'phi', 'chi2')
         for d in cmp['per_residue']:
             buf += '%6s %10.3f %12.5f %10.3f\n' % (
