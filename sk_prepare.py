@@ -34,17 +34,31 @@ Copyright (c) 2025-2026 Prof. Dr. Donghan Lee, Korea Basic Science Institute (KB
 # Original code: Adam Mazur et al., MPI Goettingen, 2012
 ###
 
-from sys import argv, stderr
+import argparse
+from sys import stderr
 from json import dumps
+from cpmg import __version__
 from cpmg.model_2state import CPMG_model
 
 
 def main():
     """Build a ShereKhan JSON config from .dat files passed on the command line."""
-    if len(argv) < 2:
-        stderr.write('Usage: sk_prepare.py <file1.dat> [file2.dat ...] > config.json\n')
+    parser = argparse.ArgumentParser(
+        prog='sk-prepare',
+        description='Build a ShereKhan JSON config (written to stdout) from CPMG .dat files, one per field.')
+    parser.add_argument('datfiles', nargs='+', metavar='DAT', help='CPMG .dat file (one per magnetic field)')
+    parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)
+    args = parser.parse_args()
+
+    try:
+        return _build_config(args.datfiles)
+    except (FileNotFoundError, ValueError) as exc:
+        stderr.write('sk-prepare: error: %s\n' % exc)
         raise SystemExit(1)
 
+
+def _build_config(datfiles):
+    """Parse the .dat files, classify the regime and print the config JSON."""
     # -----------------------------------------------------------------------
     # Initialise model and output config skeleton
     # -----------------------------------------------------------------------
@@ -64,9 +78,9 @@ def main():
     # -----------------------------------------------------------------------
     # Load all .dat files provided on the command line (one per field)
     # -----------------------------------------------------------------------
-    for i in range(1, len(argv)):
-        m2.dataset.addField(argv[i])  # parse file, extend dataset
-        expList.append(argv[i])       # record the path for the config
+    for path in datfiles:
+        m2.dataset.addField(path)  # parse file, extend dataset
+        expList.append(path)       # record the path for the config
 
     newDict['datasets'] = expList
 
