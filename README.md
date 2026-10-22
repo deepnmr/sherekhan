@@ -1,4 +1,4 @@
-# ShereKhan 1.2.1
+# ShereKhan 1.3.0
 
 [![CI](https://github.com/deepnmr/sherekhan/actions/workflows/ci.yml/badge.svg)](https://github.com/deepnmr/sherekhan/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -29,7 +29,7 @@ This installs the `cpmg` package and three console scripts:
 ```bash
 sk-synth                                      # → synth-60.dat, synth-90.dat
 sk-prepare synth-60.dat synth-90.dat > run.conf
-sk-run run.conf                               # → run.log, run.pdf, JSON on stdout
+sk-run run.conf                               # → run.log, run.pdf; last stdout line is JSON
 ```
 
 Run without installing:
@@ -55,10 +55,18 @@ Step-by-step manual — individual vs global fit, AIC comparison, jackknife vali
 
 ## Requirements
 
-Python ≥ 3.8, `numpy>=1.20`, `scipy>=1.6`, `matplotlib>=3.3`.
+Python >= 3.9 (pip >= 21.3 for editable installs), `numpy>=1.20`, `scipy>=1.6`, `matplotlib>=3.3`.
 
 ## Tests
 
 ```bash
+pip install -e ".[test]"
+pytest
 bash test/run_tests.sh
 ```
+
+Exit codes: 0 success, 1 input/runtime error (`<prog>: error: ...` on stderr), 2 usage. Options: `sk-run --quiet`, `sk-synth --seed N --outdir DIR`, `--version` on all three. See [CHANGELOG.md](CHANGELOG.md).
+
+## Citation
+
+Mazur A et al. ShereKhan. Bioinformatics 29(14):1819-1820, 2013. doi:10.1093/bioinformatics/btt286

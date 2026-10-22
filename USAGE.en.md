@@ -1,4 +1,4 @@
-# ShereKhan 1.2.1 Reference
+# ShereKhan 1.3.0 Reference
 
 > 🌐 [한국어](USAGE.md) · **English**
 
@@ -46,11 +46,13 @@ python sk_createSyntheticDataset.py
 - `synth-60.dat` — 60.12 MHz field data
 - `synth-90.dat` — 90.23 MHz field data
 
+Options: `--seed N`, `--outdir DIR` (see [CLI reference](#cli-reference)).
+
 **Parameters (edit inside the script):**
 
 | Variable | Default | Description |
 |------|--------|------|
-| `fields` | `[60.12, 90.23]` | 1H field strengths (MHz) |
+| `fields` | `[60.12, 90.23]` | observed-nucleus Larmor frequencies (MHz) |
 | `tcp` | `0.04` | CPMG pulse delay (s) |
 | `kAB` | `20.0` | A→B exchange rate (s⁻¹) |
 | `kBA` | `1000.0` | B→A exchange rate (s⁻¹) |
@@ -83,7 +85,7 @@ python sk_prepare.py exp-600MHz.dat exp-900MHz.dat > project.conf
 Reads a config file, fits the CPMG dispersion curves, and writes the results.
 
 ```bash
-python sk_run.py <config.conf>
+python sk_run.py <run.conf>
 ```
 
 **Example:**
@@ -95,7 +97,46 @@ python sk_run.py project.conf
 - `{name}.log` — text log of the fit results
 - `{name}.pdf` — dispersion curve plots
 
-**stdout:** fitted values for all residues, in JSON format
+**stdout:** banner, log text and labelled JSON lines; the final line is the per-residue JSON (see [stdout layout](#sk-run-stdout-layout))
+
+---
+
+## CLI reference
+
+```
+sk-run CONFIG [--quiet] [--version] [-h]
+sk-prepare DAT [DAT ...] [--version] [-h]
+sk-synth [--seed N] [--outdir DIR] [--version] [-h]
+```
+
+- `--quiet` (sk-run): don't print the chi2 progress lines during fitting.
+- `--seed N` (sk-synth): seed for reproducible noise (unseeded by default).
+- `--outdir DIR` (sk-synth): where to write `synth-60.dat`/`synth-90.dat` (created if missing, default: current directory).
+- `--version`: prints `<prog> 1.3.0` and exits. `-h`/`--help` prints usage. Neither writes files.
+
+The `python sk_run.py`, `python sk_prepare.py` and `python sk_createSyntheticDataset.py` forms take the same options.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | success |
+| `1` | input or runtime error: one line `<prog>: error: <message>` on stderr, naming the file, key or line. No traceback. |
+| `2` | usage error (bad or missing arguments) |
+
+### sk-run stdout layout
+
+sk-run's stdout isn't one JSON document. It always comes in this order:
+
+1. banner (version and citation)
+2. chi2 progress lines (left out with `--quiet`)
+3. the log text (same content as `{name}.log`)
+4. `Calculations finished successfully.`
+5. optional: `##### model_comparison` followed by one JSON line (when `compare_aic` is on)
+6. optional: `##### jackknife` followed by one JSON line (when `jackknife` is on)
+7. `#####` followed by one JSON line with the per-residue results. This is always the last line.
+
+sk-prepare writes only the config JSON to stdout. Warnings go to stderr, so `sk-prepare a.dat > run.conf` always gives valid JSON.
 
 ---
 
@@ -125,12 +166,21 @@ python sk_run.py project.conf
 
 | Field | Values | Description |
 |------|-----|------|
-| `exchange` | `"fast"` / `"slow"` / `"undefined"` | Exchange regime. `"undefined"` is always paired with model `Matrix`. Ambiguous multi-field data (fast/slow tie) → every residue is automatically set to `flag: "off"`. Single field → also `"undefined"`/`Matrix`, but every residue gets `flag: "on"` (alpha needs ≥ 2 fields) |
+| `exchange` | `"fast"` / `"slow"` / `"undefined"` | Exchange regime. `"undefined"` runs with `Matrix` or `London` and is reported like `"slow"`; sk-prepare suggests `Matrix` for it. Ambiguous multi-field data (fast/slow tie) → every residue is automatically set to `flag: "off"`. Single field → also `"undefined"`/`Matrix`, but every residue gets `flag: "on"` (alpha needs ≥ 2 fields) |
 | `model` | `"Meiboom"` / `"Matrix"` / `"London"` | Fitting model |
 | `init.mode` | `"guess"` / `"values"` | How initial values are set |
 | `residues[].flag` | `"on"` / `"off"` | Include this residue in the analysis |
 | `compare_aic` | `true` / `false` | Compare global vs individual fit by AIC, plus a per-residue verdict (`sk_prepare` defaults to `true`; `false` when the key is absent) |
 | `jackknife` | `true` / `false` | Validate the global fit by leave-one-residue-out jackknife (`sk_prepare` defaults to `true`; `false` when the key is absent) |
+
+### Config rules (validated by sk-run)
+
+- `exchange` must be `fast`, `slow` or `undefined` (case-sensitive). `undefined` works with `Matrix` or `London` and is reported like `slow`. Meiboom requires `fast`.
+- `model` must be `Matrix`, `London` or `Meiboom`. `init.mode` must be `guess` or `values`.
+- A relative path in `datasets` that doesn't exist from the current directory is resolved against the config file's directory.
+- With `init.mode = "values"`: `kex` must be a finite number > 0. Matrix/London also need a finite `pB` with 0 < pB < 1 and a finite `csd`; Meiboom needs a finite `phi`.
+- Residues that aren't listed in `residues` stay active.
+- Any violation exits 1 with one `sk-run: error: ...` line naming the key.
 
 ### Explicit initial values (`init.mode = "values"`)
 
@@ -152,6 +202,19 @@ python sk_run.py project.conf
     "phi": 0.5
 }
 ```
+
+---
+
+## Module overview
+
+Since 1.3.0 the fitting code is split into four modules under `cpmg/`:
+
+- `cpmg/models.py`: the R2 formulas (Matrix, London, Meiboom).
+- `cpmg/fitting.py`: the fitting engine.
+- `cpmg/analysis.py`: model comparison, the jackknife and derived uncertainties.
+- `cpmg/report.py`: log, PDF and JSON output. matplotlib is imported lazily, only when a plot is drawn.
+
+`cpmg.model_2state.CPMG_model` is still the public entry point, so existing scripts keep working.
 
 ---
 
@@ -188,7 +251,7 @@ Machine-readable stdout JSON — labelled blocks:
 ```
 
 - The `##### model_comparison` / `##### jackknife` blocks are strict JSON (non-finite values become `null`).
-- **The lines after the last `#####` are the residue result list** (compatible with existing parsers, `split('#####')[-1]`).
+- **The line after the last `#####` is the residue result list** (compatible with existing parsers, `split('#####')[-1]`).
 - When `compare_aic`/`jackknife` are off, the corresponding block is not written.
 
 ---
@@ -196,7 +259,7 @@ Machine-readable stdout JSON — labelled blocks:
 ## Data file format (`.dat`)
 
 ```
- 60.12          ← field strength (MHz, 1H)
+ 60.12          ← field (MHz, observed nucleus)
 0.040000        ← TCP (s)
 #nu_cpmg(Hz)        R2(1/s)      Esd(R2)
 # A10           ← residue name (# comment)
@@ -209,11 +272,18 @@ Machine-readable stdout JSON — labelled blocks:
  ...
 ```
 
+
+- Line 1, `field`: Larmor frequency (MHz) of the observed nucleus, e.g. 60.8 MHz for 15N on a 600 MHz spectrometer. Line 2: tcp (s).
+- Each data row needs exactly 3 numbers, and `Esd(R2)` must be > 0. A residue label line starts with `#`.
+- A file that breaks these rules stops with `<prog>: error: <file>:<line>: ...` and exit code 1.
+
 ---
 
 ## Full validation tests
 
 ```bash
+pip install -e ".[test]"   # needs pip >= 21.3
+pytest
 bash test/run_tests.sh        # fast/slow exchange test cases
 ```
 
